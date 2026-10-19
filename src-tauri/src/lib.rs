@@ -6,6 +6,7 @@ mod format;
 mod leftovers;
 mod processes;
 mod safety;
+mod uninstall;
 
 use processes::ProcState;
 use tauri::State;
@@ -84,6 +85,20 @@ async fn list_apps() -> Result<Vec<apps::AppInfo>, String> {
     blocking(|| Ok(apps::list())).await
 }
 
+/// Support files an app leaves in the user's Library (macOS).
+#[tauri::command]
+async fn app_leftovers(location: String) -> Result<Vec<uninstall::Leftover>, String> {
+    blocking(move || Ok(uninstall::leftovers(&location))).await
+}
+
+/// Removes an app: to the Trash on macOS, via its own uninstaller on
+/// Windows, or returns the package-manager command on Linux. `target` is
+/// the app's location (macOS, Linux) or display name (Windows).
+#[tauri::command]
+async fn remove_app(target: String, leftovers: Vec<String>) -> Result<uninstall::Outcome, String> {
+    blocking(move || uninstall::remove(&target, &leftovers)).await
+}
+
 #[tauri::command]
 async fn cleanup_preview(targets: Vec<cleanup::Target>) -> Result<cleanup::Preview, String> {
     blocking(move || Ok(cleanup::preview(targets))).await
@@ -148,6 +163,8 @@ pub fn run() {
             quit_processes,
             list_caches,
             list_apps,
+            app_leftovers,
+            remove_app,
             cleanup_preview,
             cleanup_execute,
             check_path,

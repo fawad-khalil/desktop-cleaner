@@ -14,6 +14,8 @@ pub struct AppInfo {
     pub installed: Option<String>,
     /// Last-used time in seconds since the Unix epoch, when known.
     pub last_used: Option<u64>,
+    /// Why it can't be removed from here (built into the OS…); `None` when it can.
+    pub blocked: Option<String>,
 }
 
 #[cfg(windows)]
@@ -54,6 +56,7 @@ pub fn list() -> Vec<AppInfo> {
                         let dir = std::path::Path::new(&exe).parent()?;
                         (dir.components().count() > 2).then(|| dir.to_string_lossy().into_owned())
                     });
+                let has_uninstaller = k.get_value::<String, _>("UninstallString").is_ok_and(|u| !u.trim().is_empty());
                 let from_runs = runs.last_run(&name, location.as_deref());
                 let from_files = location.as_deref().and_then(last_used_in);
                 out.push(AppInfo {
@@ -67,12 +70,37 @@ pub fn list() -> Vec<AppInfo> {
                         .map(|kb| kb as u64 * 1024),
                     installed: k.get_value("InstallDate").ok(),
                     location,
+                    blocked: (!has_uninstaller).then(|| "no uninstaller registered".to_string()),
                 });
             }
         }
     }
     out.sort_by_key(|a| a.name.to_lowercase());
     out
+}
+
+/// The registered uninstall command for the app with this display name.
+#[cfg(windows)]
+pub fn uninstall_command(name: &str) -> Option<String> {
+    use winreg::RegKey;
+    use winreg::enums::*;
+    for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+        for p in [
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ] {
+            let Ok(key) = RegKey::predef(hive).open_subkey(p) else { continue };
+            for sub in key.enum_keys().flatten() {
+                let Ok(k) = key.open_subkey(&sub) else { continue };
+                if k.get_value::<String, _>("DisplayName").ok().as_deref() == Some(name) {
+                    if let Ok(cmd) = k.get_value::<String, _>("UninstallString") {
+                        return Some(cmd);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Last-run times recorded by Explorer in the UserAssist registry key
@@ -200,7 +228,10 @@ pub fn list() -> Vec<AppInfo> {
         .par_iter()
         .map(|p| {
             let md = std::fs::metadata(p).ok();
+            let id = crate::uninstall::bundle_id(p);
             AppInfo {
+                blocked: crate::uninstall::blocked(p, id.as_deref()),
+                publisher: id.as_deref().filter(|i| i.starts_with("com.apple.")).map(|_| "Apple".to_string()),
                 name: p
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
