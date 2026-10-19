@@ -2,17 +2,20 @@
 // most Linux tools in powers of 1024. Match the system so numbers agree.
 const unit = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac") ? 1000 : 1024;
 
-export function bytes(n: number | null | undefined): string {
+export function bytes(n: number | null | undefined, base = unit): string {
   if (n == null) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   let v = n;
-  while (v >= unit && i < units.length - 1) {
-    v /= unit;
+  while (v >= base && i < units.length - 1) {
+    v /= base;
     i++;
   }
   return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
 }
+
+/** Memory sizes: every OS (Activity Monitor included) counts RAM in powers of 1024. */
+export const mem = (n: number | null | undefined) => bytes(n, 1024);
 
 export function pct(part: number, whole: number): string {
   if (!whole) return "0%";

@@ -4,7 +4,7 @@
     api, leftoverApi,
     type AppInfo, type CacheInfo, type DriveInfo, type FileItem, type Leftover, type ProcSnapshot,
   } from "../api";
-  import { bytes, daysSince } from "../format";
+  import { bytes, daysSince, mem } from "../format";
   import { nav, type TabId } from "../nav.svelte";
 
   interface Rec {
@@ -65,13 +65,21 @@
     for (const a of d.apps.filter((a) => (a.size ?? 0) > 5 * GB))
       out.push({ level: "info", title: `${a.name} uses ${bytes(a.size)}`, detail: "One of your largest apps. Consider uninstalling it if you no longer need it.", gain: a.size ?? 0, tab: "apps", action: "See apps" });
 
-    const mem = d.procs.used_memory / (d.procs.total_memory || 1);
-    const byMem = [...d.procs.processes].sort((a, b) => b.memory - a.memory);
-    if (mem > 0.85)
-      out.push({ level: "high", title: `Memory is ${(mem * 100).toFixed(0)}% used`, detail: `Top consumers: ${byMem.slice(0, 3).map((p) => `${p.name} (${bytes(p.memory)})`).join(", ")}. Closing them will speed things up.`, tab: "processes", action: "See processes" });
-    const hog = [...d.procs.processes].sort((a, b) => b.cpu - a.cpu)[0];
-    if (hog && hog.cpu > 50)
-      out.push({ level: "medium", title: `${hog.name} is using ${hog.cpu.toFixed(0)}% CPU`, detail: "If you're not using it right now, it may be stuck or doing background work.", tab: "processes", action: "See processes" });
+    // Judge apps as a whole (all of Chrome, not one renderer), ignoring the OS.
+    const apps = new Map<string, { memory: number; cpu: number }>();
+    for (const p of d.procs.processes.filter((p) => p.kind !== "system")) {
+      const a = apps.get(p.app) ?? { memory: 0, cpu: 0 };
+      a.memory += p.memory;
+      a.cpu += p.cpu;
+      apps.set(p.app, a);
+    }
+    const memUse = d.procs.used_memory / (d.procs.total_memory || 1);
+    const byMem = [...apps].sort((a, b) => b[1].memory - a[1].memory);
+    if (memUse > 0.85)
+      out.push({ level: "high", title: `Memory is ${(memUse * 100).toFixed(0)}% used`, detail: `Using the most: ${byMem.slice(0, 3).map(([n, a]) => `${n} (${mem(a.memory)})`).join(", ")}. Quitting apps you're not using will speed things up.`, tab: "processes", action: "See what's running" });
+    const hog = [...apps].sort((a, b) => b[1].cpu - a[1].cpu)[0];
+    if (hog && hog[1].cpu > 50)
+      out.push({ level: "medium", title: `${hog[0]} is using ${hog[1].cpu.toFixed(0)}% of the processor`, detail: "If you're not using it right now, it may be stuck or doing background work.", tab: "processes", action: "See what's running" });
 
     if (!out.length) out.push({ level: "info", title: "All looks good", detail: "No issues found right now." });
     const rank = { high: 0, medium: 1, info: 2 };

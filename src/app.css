@@ -94,3 +94,10 @@ code.path { color: var(--muted); word-break: break-all; }
 
 [hidden] { display: none !important; }
 button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+/* Segmented control */
+.seg { display: flex; }
+.seg button { border-radius: 0; margin-left: -1px; }
+.seg button:first-child { border-radius: 8px 0 0 8px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 8px 8px 0; }
+.seg button.on { background: var(--accent); color: #fff; border-color: var(--accent); }

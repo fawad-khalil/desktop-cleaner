@@ -54,6 +54,11 @@ export interface ProcInfo {
   run_time: number;
   connections: number;
   listening: number;
+  /** Friendly name of the app this process belongs to. */
+  app: string;
+  kind: "app" | "background" | "system";
+  /** Runs as the current user. */
+  mine: boolean;
 }
 
 export interface ProcSnapshot {
@@ -95,6 +100,8 @@ export const api = {
   largestFiles: (path: string, category: string | null, age: number | null, limit = 100) =>
     invoke<FileItem[]>("largest_files", { path, category, age, limit }),
   listProcesses: () => invoke<ProcSnapshot>("list_processes"),
+  /** Asks processes to quit normally; the backend refuses system ones. */
+  quitProcesses: (pids: number[]) => invoke<number>("quit_processes", { pids }),
   listCaches: () => invoke<CacheInfo[]>("list_caches"),
   listApps: () => invoke<AppInfo[]>("list_apps"),
 };
