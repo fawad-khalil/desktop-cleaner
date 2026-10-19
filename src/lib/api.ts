@@ -107,7 +107,8 @@ export const api = {
 };
 
 export type Target =
-  | { kind: "contents"; path: string }
+  /** With `min_age_days`, only items nothing inside has been used for that long. */
+  | { kind: "contents"; path: string; min_age_days?: number }
   | { kind: "old_files"; path: string; min_age_days: number; min_size: number };
 
 export interface Candidate {

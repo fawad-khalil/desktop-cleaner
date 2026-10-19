@@ -113,6 +113,8 @@ struct Acc {
     skipped: u64,
     types: HashMap<&'static str, (u64, u64)>,
     ages: [(u64, u64); 5],
+    /// Most recent last-used time of any file, seconds since the epoch.
+    newest: u64,
 }
 
 pub const AGE_LABELS: [&str; 5] = [
@@ -145,6 +147,7 @@ impl Acc {
         self.size += other.size;
         self.files += other.files;
         self.skipped += other.skipped;
+        self.newest = self.newest.max(other.newest);
         for (k, (s, f)) in other.types {
             let e = self.types.entry(k).or_default();
             e.0 += s;
@@ -159,6 +162,7 @@ impl Acc {
 
     fn add_file(&mut self, path: &Path, md: &fs::Metadata) {
         SCAN_PROGRESS.fetch_add(1, Ordering::Relaxed);
+        self.newest = self.newest.max(crate::cleanup::last_used(md).unwrap_or(0));
         let len = md.len();
         let a = &mut self.ages[age_bucket(md)];
         a.0 += len;
@@ -503,6 +507,13 @@ pub fn category_for(path: &Path) -> &'static str {
 pub fn dir_size(path: &Path) -> (u64, u64) {
     let acc = walk(path);
     (acc.size, acc.files)
+}
+
+/// Size of a directory tree and the last time any file in it was used
+/// (`None` when it holds no files).
+pub fn dir_size_and_newest(path: &Path) -> (u64, Option<u64>) {
+    let acc = walk(path);
+    (acc.size, (acc.newest > 0).then_some(acc.newest))
 }
 
 #[cfg(test)]

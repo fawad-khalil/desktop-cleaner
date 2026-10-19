@@ -13,6 +13,8 @@
   let pickedLeftovers = $state<Set<string>>(new Set());
   let copied = $state("");
   let picked = $state<Set<string>>(new Set());
+  /** Only clean cache items unused for this many days (0 = everything). */
+  let cacheAge = $state(0);
   let oldEnabled = $state(false);
   let oldPath = $state("");
   let minAge = $state(180);
@@ -64,7 +66,10 @@
   }
 
   async function runPreview() {
-    const targets: Target[] = [...picked, ...pickedLeftovers].map((path) => ({ kind: "contents", path }));
+    const targets: Target[] = [
+      ...[...picked].map((path): Target => ({ kind: "contents", path, ...(cacheAge ? { min_age_days: cacheAge } : {}) })),
+      ...[...pickedLeftovers].map((path): Target => ({ kind: "contents", path })),
+    ];
     if (oldEnabled && oldPath)
       targets.push({ kind: "old_files", path: oldPath, min_age_days: minAge, min_size: minSize });
     if (!targets.length) return;
@@ -133,6 +138,17 @@
 <div class="grid two">
   <div class="card">
     <h3>Caches &amp; temp</h3>
+    <div class="toolbar">
+      <span class="muted">Not used for</span>
+      <select bind:value={cacheAge}>
+        <option value={0}>any time (clean everything)</option>
+        <option value={7}>7 days</option>
+        <option value={30}>30 days</option>
+        <option value={90}>3 months</option>
+        <option value={180}>6 months</option>
+        <option value={365}>1 year</option>
+      </select>
+    </div>
     {#if caches}
       {#each caches as c}
         <label class="check">
@@ -143,6 +159,9 @@
       {/each}
     {:else}
       <p class="muted">Measuring caches…</p>
+    {/if}
+    {#if cacheAge}
+      <p class="note">Only items in the ticked caches that nothing has used for {cacheAge} days or more are included; sizes above are the whole cache. The preview shows exactly what qualifies.</p>
     {/if}
   </div>
 

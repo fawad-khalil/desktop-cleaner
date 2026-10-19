@@ -11,8 +11,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Target {
-    /// Everything inside a folder (e.g. a cache), item by item.
-    Contents { path: String },
+    /// Everything inside a folder (e.g. a cache), item by item; with
+    /// `min_age_days`, only items nothing inside has been used for that long.
+    Contents {
+        path: String,
+        #[serde(default)]
+        min_age_days: Option<u64>,
+    },
     /// Files under `path` not used for `min_age_days` and at least `min_size` bytes.
     OldFiles {
         path: String,
@@ -60,7 +65,9 @@ pub fn last_used(md: &fs::Metadata) -> Option<u64> {
     a.max(m)
 }
 
-fn contents(root: &Path, out: &mut Vec<Candidate>, refused: &mut Vec<Refusal>) {
+/// `cutoff`: only items last used at or before this time (seconds since the
+/// epoch). A folder counts as used when any file inside it was.
+fn contents(root: &Path, cutoff: Option<u64>, out: &mut Vec<Candidate>, refused: &mut Vec<Refusal>) {
     let Ok(rd) = fs::read_dir(root) else { return };
     let source = root.to_string_lossy().into_owned();
     let entries: Vec<_> = rd.flatten().collect();
@@ -75,16 +82,20 @@ fn contents(root: &Path, out: &mut Vec<Candidate>, refused: &mut Vec<Refusal>) {
                     reason,
                 }));
             }
-            let size = if md.is_dir() {
-                crate::disk::dir_size(&p).0
+            let (size, used) = if md.is_dir() {
+                let (size, newest) = crate::disk::dir_size_and_newest(&p);
+                (size, newest.or_else(|| last_used(&md)))
             } else {
-                md.len()
+                (md.len(), last_used(&md))
             };
+            if cutoff.is_some_and(|c| used.is_none_or(|u| u > c)) {
+                return None;
+            }
             Some(Ok(Candidate {
                 path: p.to_string_lossy().into_owned(),
                 size,
                 is_dir: md.is_dir(),
-                last_used: last_used(&md),
+                last_used: used,
                 source: source.clone(),
             }))
         })
@@ -143,7 +154,10 @@ pub fn preview(targets: Vec<Target>) -> Preview {
     let mut refused = Vec::new();
     for t in targets {
         match t {
-            Target::Contents { path } => contents(Path::new(&path), &mut items, &mut refused),
+            Target::Contents { path, min_age_days } => {
+                let cutoff = min_age_days.map(|d| now.saturating_sub(d * 86_400));
+                contents(Path::new(&path), cutoff, &mut items, &mut refused)
+            }
             Target::OldFiles {
                 path,
                 min_age_days,
@@ -237,11 +251,13 @@ mod tests {
         fs::write(root.join("cache/a.bin"), vec![0u8; 10]).unwrap();
         fs::write(root.join("cache/sub/b.bin"), vec![0u8; 20]).unwrap();
 
-        let p = preview(vec![Target::Contents {
-            path: root.join("cache").to_string_lossy().into_owned(),
-        }]);
+        let cache = root.join("cache").to_string_lossy().into_owned();
+        let p = preview(vec![Target::Contents { path: cache.clone(), min_age_days: None }]);
         assert_eq!(p.items.len(), 2);
         assert_eq!(p.total, 30);
+        // Just written, so nothing in the cache counts as unused for 7 days.
+        let p = preview(vec![Target::Contents { path: cache, min_age_days: Some(7) }]);
+        assert!(p.items.is_empty());
 
         // Freshly written files are not "old".
         let p = preview(vec![Target::OldFiles {
