@@ -92,3 +92,4 @@ code.path { color: var(--muted); word-break: break-all; }
 .rec p { margin: 4px 0 0; }
 
 [hidden] { display: none !important; }
+button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }

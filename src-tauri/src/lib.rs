@@ -1,7 +1,9 @@
 mod apps;
 mod caches;
+mod cleanup;
 mod disk;
 mod processes;
+mod safety;
 
 use processes::ProcState;
 use tauri::State;
@@ -44,17 +46,40 @@ async fn list_apps() -> Result<Vec<apps::AppInfo>, String> {
     blocking(|| Ok(apps::list())).await
 }
 
+#[tauri::command]
+async fn cleanup_preview(targets: Vec<cleanup::Target>) -> Result<cleanup::Preview, String> {
+    blocking(move || Ok(cleanup::preview(targets))).await
+}
+
+/// Moves items to the Recycle Bin / Trash. Each path is re-validated.
+#[tauri::command]
+async fn cleanup_execute(paths: Vec<String>) -> Result<cleanup::CleanResult, String> {
+    blocking(move || Ok(cleanup::execute(paths))).await
+}
+
+#[tauri::command]
+fn check_path(path: String) -> Option<String> {
+    match safety::check(std::path::Path::new(&path)) {
+        safety::Verdict::Allowed => None,
+        safety::Verdict::Protected(r) => Some(r),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(ProcState::new())
         .invoke_handler(tauri::generate_handler![
             list_drives,
             scan_dir,
             list_processes,
             list_caches,
-            list_apps
+            list_apps,
+            cleanup_preview,
+            cleanup_execute,
+            check_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -78,3 +78,41 @@ export const api = {
   listCaches: () => invoke<CacheInfo[]>("list_caches"),
   listApps: () => invoke<AppInfo[]>("list_apps"),
 };
+
+export type Target =
+  | { kind: "contents"; path: string }
+  | { kind: "old_files"; path: string; min_age_days: number; min_size: number };
+
+export interface Candidate {
+  path: string;
+  size: number;
+  is_dir: boolean;
+  last_used: number | null;
+  source: string;
+}
+
+export interface Refusal {
+  path: string;
+  reason: string;
+}
+
+export interface Preview {
+  items: Candidate[];
+  total: number;
+  protected: Refusal[];
+  protected_count: number;
+  truncated: boolean;
+}
+
+export interface CleanResult {
+  moved: number;
+  freed: number;
+  failed: Refusal[];
+}
+
+export const cleanupApi = {
+  preview: (targets: Target[]) => invoke<Preview>("cleanup_preview", { targets }),
+  /** Moves items to the Recycle Bin / Trash. Never permanent. */
+  execute: (paths: string[]) => invoke<CleanResult>("cleanup_execute", { paths }),
+  checkPath: (path: string) => invoke<string | null>("check_path", { path }),
+};
