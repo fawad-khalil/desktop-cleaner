@@ -6,6 +6,7 @@
   import Apps from "$lib/views/Apps.svelte";
   import Recommendations from "$lib/views/Recommendations.svelte";
   import Drives from "$lib/views/Drives.svelte";
+  import { nav, type TabId } from "$lib/nav.svelte";
   import "../app.css";
 
   const tabs = [
@@ -16,18 +17,20 @@
     { id: "apps", label: "Apps", icon: "▦", view: Apps },
     { id: "recommendations", label: "Recommendations", icon: "★", view: Recommendations },
     { id: "drives", label: "Drives", icon: "⛁", view: Drives },
-  ] as const;
-  type TabId = (typeof tabs)[number]["id"];
+  ] as const satisfies readonly { id: TabId; label: string; icon: string; view: unknown }[];
 
-  let active = $state<TabId>("disk");
+  const active = $derived(nav.tab);
   // Views stay mounted after first visit so scans aren't lost when switching
   // tabs. Processes is the exception: it polls, so it only lives while shown.
   let visited = $state<Set<TabId>>(new Set(["disk"]));
 
   function go(id: TabId) {
-    active = id;
-    visited = new Set([...visited, id]);
+    nav.tab = id;
   }
+
+  $effect(() => {
+    if (!visited.has(nav.tab)) visited = new Set([...visited, nav.tab]);
+  });
 </script>
 
 <div class="app">
