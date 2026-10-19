@@ -121,3 +121,17 @@ export const cleanupApi = {
   execute: (paths: string[]) => invoke<CleanResult>("cleanup_execute", { paths }),
   checkPath: (path: string) => invoke<string | null>("check_path", { path }),
 };
+
+export interface Leftover {
+  title: string;
+  description: string;
+  paths: string[];
+  size: number;
+  action: "trash" | "system_tool" | "command" | "manual";
+  command: string | null;
+}
+
+export const leftoverApi = {
+  find: () => invoke<Leftover[]>("find_leftovers"),
+  openSystemCleanup: () => invoke<void>("open_system_cleanup"),
+};

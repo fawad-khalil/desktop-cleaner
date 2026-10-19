@@ -1,10 +1,17 @@
 <script lang="ts">
   import { downloadDir } from "@tauri-apps/api/path";
   import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
-  import { api, cleanupApi, type CacheInfo, type CleanResult, type Preview, type Target } from "../api";
+  import {
+    api, cleanupApi, leftoverApi,
+    type CacheInfo, type CleanResult, type Leftover, type Preview, type Target,
+  } from "../api";
   import { ago, bytes } from "../format";
 
   let caches = $state<CacheInfo[] | null>(null);
+  let leftovers = $state<Leftover[] | null>(null);
+  /** Leftover paths the user ticked. Kept separate so the confirmation can call them out. */
+  let pickedLeftovers = $state<Set<string>>(new Set());
+  let copied = $state("");
   let picked = $state<Set<string>>(new Set());
   let oldEnabled = $state(false);
   let oldPath = $state("");
@@ -20,6 +27,7 @@
 
   $effect(() => {
     api.listCaches().then((c) => (caches = c.filter((x) => x.size > 0))).catch((e) => (error = String(e)));
+    leftoverApi.find().then((l) => (leftovers = l)).catch((e) => (error = String(e)));
     downloadDir().then((d) => (oldPath ||= d)).catch(() => {});
   });
 
@@ -30,13 +38,33 @@
     return s;
   }
 
+  function togglePaths(paths: string[], on: boolean) {
+    const s = new Set(pickedLeftovers);
+    for (const p of paths) on ? s.add(p) : s.delete(p);
+    pickedLeftovers = s;
+  }
+
+  async function copy(text: string) {
+    await navigator.clipboard.writeText(text);
+    copied = text;
+    setTimeout(() => (copied = ""), 1500);
+  }
+
+  async function openTool() {
+    try {
+      await leftoverApi.openSystemCleanup();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
   async function browse() {
     const dir = await openDialog({ directory: true, defaultPath: oldPath || undefined });
     if (typeof dir === "string") oldPath = dir;
   }
 
   async function runPreview() {
-    const targets: Target[] = [...picked].map((path) => ({ kind: "contents", path }));
+    const targets: Target[] = [...picked, ...pickedLeftovers].map((path) => ({ kind: "contents", path }));
     if (oldEnabled && oldPath)
       targets.push({ kind: "old_files", path: oldPath, min_age_days: minAge, min_size: minSize });
     if (!targets.length) return;
@@ -70,7 +98,9 @@
       result = await cleanupApi.execute(paths);
       preview = null;
       selected = new Set();
+      pickedLeftovers = new Set();
       api.listCaches().then((c) => (caches = c.filter((x) => x.size > 0)));
+      leftoverApi.find().then((l) => (leftovers = l));
     } catch (e) {
       error = String(e);
     } finally {
@@ -148,8 +178,47 @@
   </div>
 </div>
 
+<div class="card">
+  <h3>Leftovers from updates and installers <span class="badge">confirm before delete</span></h3>
+  {#if !leftovers}
+    <p class="muted">Looking for update leftovers…</p>
+  {:else if !leftovers.length}
+    <p class="muted">No update leftovers found.</p>
+  {:else}
+    {#each leftovers as l}
+      <div class="leftover">
+        <div class="lhead">
+          {#if l.action === "trash"}
+            <input
+              type="checkbox"
+              checked={l.paths.every((p) => pickedLeftovers.has(p))}
+              onchange={(e) => togglePaths(l.paths, e.currentTarget.checked)}
+            />
+          {/if}
+          <strong class="grow">{l.title}</strong>
+          <span class="muted">{bytes(l.size)}</span>
+        </div>
+        <p class="muted small-p">{l.description}</p>
+        <div class="small-p">{#each l.paths as p}<code class="path">{p}</code> {/each}</div>
+        {#if l.action === "system_tool"}
+          <button onclick={openTool}>Open Disk Cleanup…</button>
+          <span class="note">In Disk Cleanup, choose "Clean up system files" and tick the matching entry.</span>
+        {:else if l.action === "command" && l.command}
+          <div class="toolbar">
+            <code class="cmd">{l.command}</code>
+            <button onclick={() => copy(l.command!)}>{copied === l.command ? "Copied" : "Copy"}</button>
+          </div>
+          <span class="note">Run this in a terminal yourself. StorageCleaner never runs commands as root.</span>
+        {:else if l.action === "manual"}
+          <span class="note">This lives in a protected system area, so StorageCleaner won't delete it. Remove it in Finder if you don't need it.</span>
+        {/if}
+      </div>
+    {/each}
+  {/if}
+</div>
+
 <div class="toolbar">
-  <button class="primary" onclick={runPreview} disabled={!!busy || (!picked.size && !oldEnabled)}>
+  <button class="primary" onclick={runPreview} disabled={!!busy || (!picked.size && !pickedLeftovers.size && !oldEnabled)}>
     Preview (dry run)
   </button>
   {#if busy}<span class="muted">{busy}</span>{/if}
@@ -200,4 +269,10 @@
   .check { display: flex; gap: 8px; align-items: center; padding: 4px 0; cursor: pointer; }
   .grow { flex: 1; }
   .small { font-size: 12px; margin: 6px 0; padding-left: 18px; }
+  .badge { font-size: 11px; font-weight: 600; color: #fff; background: var(--warn); border-radius: 6px; padding: 2px 6px; margin-left: 6px; }
+  .leftover { border-top: 1px solid var(--border); padding: 10px 0; }
+  .leftover:first-of-type { border-top: none; }
+  .lhead { display: flex; gap: 8px; align-items: center; }
+  .small-p { margin: 4px 0 6px; font-size: 12px; }
+  .cmd { background: var(--bg); padding: 6px 8px; border-radius: 6px; flex: 1; word-break: break-all; }
 </style>

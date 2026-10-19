@@ -2,6 +2,7 @@ mod apps;
 mod caches;
 mod cleanup;
 mod disk;
+mod leftovers;
 mod processes;
 mod safety;
 
@@ -65,6 +66,18 @@ fn check_path(path: String) -> Option<String> {
     }
 }
 
+#[tauri::command]
+async fn find_leftovers() -> Result<Vec<leftovers::Leftover>, String> {
+    blocking(|| Ok(leftovers::find())).await
+}
+
+/// Opens the OS's own cleanup tool (Disk Cleanup on Windows). It does not
+/// delete anything by itself; the user chooses in that tool.
+#[tauri::command]
+fn open_system_cleanup() -> Result<(), String> {
+    leftovers::open_system_tool().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -79,7 +92,9 @@ pub fn run() {
             list_apps,
             cleanup_preview,
             cleanup_execute,
-            check_path
+            check_path,
+            find_leftovers,
+            open_system_cleanup
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
