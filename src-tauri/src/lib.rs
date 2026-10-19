@@ -29,8 +29,13 @@ async fn list_drives() -> Result<Vec<disk::DriveInfo>, String> {
 }
 
 #[tauri::command]
-async fn scan_dir(path: String) -> Result<disk::ScanResult, String> {
-    blocking(move || disk::scan(&path)).await
+async fn scan_dir(path: String, fresh: Option<bool>) -> Result<disk::ScanResult, String> {
+    blocking(move || disk::scan(&path, fresh.unwrap_or(false))).await
+}
+
+#[tauri::command]
+fn scan_progress() -> u64 {
+    disk::scan_progress()
 }
 
 #[tauri::command]
@@ -118,6 +123,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_drives,
             scan_dir,
+            scan_progress,
             largest_files,
             list_processes,
             list_caches,

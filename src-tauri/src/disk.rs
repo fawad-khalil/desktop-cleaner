@@ -5,6 +5,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::Disks;
 
@@ -24,6 +26,9 @@ pub fn list_drives() -> Vec<DriveInfo> {
     disks
         .list()
         .iter()
+        // On macOS the data volume (and VM, Preboot…) share the boot
+        // volume's APFS container; "/" already shows the whole container.
+        .filter(|d| !(cfg!(target_os = "macos") && d.mount_point().starts_with("/System/Volumes")))
         .map(|d| DriveInfo {
             name: d.name().to_string_lossy().into_owned(),
             mount_point: d.mount_point().to_string_lossy().into_owned(),
@@ -43,6 +48,42 @@ pub struct Entry {
     pub size: u64,
     pub is_dir: bool,
     pub files: u64,
+    /// The largest items one level further down (only filled for the
+    /// direct children of a scan, so the UI can draw a second ring).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<Entry>,
+}
+
+/// How many grandchildren are kept per child; the rest show as a gap.
+const MAX_GRANDCHILDREN: usize = 24;
+
+/// Files seen by the scan in progress, so the UI can show it's moving.
+static SCAN_PROGRESS: AtomicU64 = AtomicU64::new(0);
+
+pub fn scan_progress() -> u64 {
+    SCAN_PROGRESS.load(Ordering::Relaxed)
+}
+
+/// Directories that are never descended into: other mounts and virtual
+/// file systems that would double-count or never end. `root` itself is
+/// always scanned so the user can still pick one explicitly.
+fn skip_dir(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // /System/Volumes/Data holds the same files as /Users, /Applications
+        // etc. through firmlinks; /Volumes holds other drives.
+        if path == Path::new("/System/Volumes") || path == Path::new("/Volumes") || path == Path::new("/dev") {
+            return true;
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if ["/proc", "/sys", "/dev", "/run"].iter().any(|p| path == Path::new(p)) {
+            return true;
+        }
+    }
+    let _ = path;
+    false
 }
 
 #[derive(Serialize, Clone)]
@@ -117,6 +158,7 @@ impl Acc {
     }
 
     fn add_file(&mut self, path: &Path, md: &fs::Metadata) {
+        SCAN_PROGRESS.fetch_add(1, Ordering::Relaxed);
         let len = md.len();
         let a = &mut self.ages[age_bucket(md)];
         a.0 += len;
@@ -149,7 +191,10 @@ fn walk(dir: &Path) -> Acc {
             continue;
         }
         if ft.is_dir() {
-            subdirs.push(ent.path());
+            let p = ent.path();
+            if !skip_dir(&p) && !other_device(&p) {
+                subdirs.push(p);
+            }
         } else if ft.is_file() {
             if let Ok(md) = ent.metadata() {
                 acc.add_file(&ent.path(), &md);
@@ -163,83 +208,266 @@ fn walk(dir: &Path) -> Acc {
     acc.merge(sub)
 }
 
-/// Scans one level of `path`: every direct child gets its recursive size,
-/// and the whole tree is bucketed by file type.
-pub fn scan(path: &str) -> anyhow::Result<ScanResult> {
+/// On Linux, a directory on another device is a separate mount (a USB
+/// drive under /media, a network share…) and belongs to another drive.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn other_device(p: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::symlink_metadata(p), SCAN_DEV.load(Ordering::Relaxed)) {
+        (Ok(md), dev) if dev != 0 => md.dev() != dev,
+        _ => false,
+    }
+}
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn other_device(_: &Path) -> bool {
+    false
+}
+
+/// Device of the current scan root (Linux only; 0 = unknown).
+static SCAN_DEV: AtomicU64 = AtomicU64::new(0);
+
+/// A directory (or large file) remembered from the last scan, so moving
+/// around the tree doesn't need another pass over the disk. Items smaller
+/// than `KEEP_MIN` are only counted in their parent's totals.
+struct Node {
+    name: Box<str>,
+    size: u64,
+    files: u64,
+    is_dir: bool,
+    skipped: u64,
+    /// Largest first.
+    children: Vec<Node>,
+    stats: Option<Box<Stats>>,
+}
+
+struct Stats {
+    types: Vec<TypeBucket>,
+    ages: Vec<TypeBucket>,
+}
+
+const KEEP_MIN: u64 = 1 << 20;
+const MAX_FILES_KEPT: usize = 64;
+/// Type/age breakdowns are kept for big folders; small ones are re-walked
+/// on demand, which is quick.
+const STATS_MIN: u64 = 64 << 20;
+
+/// The last scanned tree and the path it was scanned from.
+static TREE: Mutex<Option<(PathBuf, Node)>> = Mutex::new(None);
+
+fn stats(acc: &Acc) -> Stats {
+    let mut types: Vec<TypeBucket> = acc
+        .types
+        .iter()
+        .map(|(k, (size, files))| TypeBucket { category: k.to_string(), size: *size, files: *files })
+        .collect();
+    types.sort_by(|a, b| b.size.cmp(&a.size));
+    let ages = AGE_LABELS
+        .iter()
+        .zip(acc.ages)
+        .map(|(l, (size, files))| TypeBucket { category: l.to_string(), size, files })
+        .collect();
+    Stats { types, ages }
+}
+
+/// Like `walk`, but also builds the `Node` tree.
+fn walk_tree(dir: &Path, name: Box<str>) -> (Acc, Node) {
+    let mut node = Node { name, size: 0, files: 0, is_dir: true, skipped: 0, children: Vec::new(), stats: None };
+    let Ok(rd) = fs::read_dir(dir) else {
+        node.skipped = 1;
+        return (Acc { skipped: 1, ..Default::default() }, node);
+    };
+    let mut subdirs = Vec::new();
+    let mut acc = Acc::default();
+    let mut big_files = Vec::new();
+    for ent in rd.flatten() {
+        let Ok(ft) = ent.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
+        let p = ent.path();
+        if ft.is_dir() {
+            if !skip_dir(&p) && !other_device(&p) {
+                subdirs.push(p);
+            }
+        } else if ft.is_file() {
+            let Ok(md) = ent.metadata() else { continue };
+            acc.add_file(&p, &md);
+            if md.len() >= KEEP_MIN {
+                big_files.push(Node {
+                    name: ent.file_name().to_string_lossy().into(),
+                    size: md.len(),
+                    files: 1,
+                    is_dir: false,
+                    skipped: 0,
+                    children: Vec::new(),
+                    stats: None,
+                });
+            }
+        }
+    }
+    let subs: Vec<(Acc, Node)> = subdirs
+        .par_iter()
+        .map(|d| {
+            let name = d.file_name().map(|n| n.to_string_lossy().into()).unwrap_or_default();
+            walk_tree(d, name)
+        })
+        .collect();
+    big_files.sort_by(|a, b| b.size.cmp(&a.size));
+    big_files.truncate(MAX_FILES_KEPT);
+    let mut children = big_files;
+    for (a, n) in subs {
+        acc = acc.merge(a);
+        if n.size >= KEEP_MIN {
+            children.push(n);
+        }
+    }
+    children.sort_by(|a, b| b.size.cmp(&a.size));
+    node.children = children;
+    node.size = acc.size;
+    node.files = acc.files;
+    node.skipped = acc.skipped;
+    if acc.size >= STATS_MIN {
+        node.stats = Some(Box::new(stats(&acc)));
+    }
+    (acc, node)
+}
+
+fn result_from(path: &Path, node: &Node) -> ScanResult {
+    let entry = |n: &Node, parent: &Path, kids: Vec<Entry>| Entry {
+        name: n.name.to_string(),
+        path: parent.join(&*n.name).to_string_lossy().into_owned(),
+        size: n.size,
+        is_dir: n.is_dir,
+        files: n.files,
+        children: kids,
+    };
+    let entries = node
+        .children
+        .iter()
+        .map(|c| {
+            let cp = path.join(&*c.name);
+            let kids = c.children.iter().take(MAX_GRANDCHILDREN).map(|g| entry(g, &cp, Vec::new())).collect();
+            entry(c, path, kids)
+        })
+        .collect();
+    let (types, ages) = match &node.stats {
+        Some(s) => (s.types.clone(), s.ages.clone()),
+        None => (Vec::new(), Vec::new()),
+    };
+    ScanResult {
+        path: path.to_string_lossy().into_owned(),
+        total: node.size,
+        files: node.files,
+        entries,
+        types,
+        ages,
+        skipped: node.skipped,
+    }
+}
+
+/// Finds `path` in the cached tree.
+fn cached(path: &Path) -> Option<ScanResult> {
+    let mut res = {
+        let g = TREE.lock().ok()?;
+        let (root, tree) = g.as_ref()?;
+        let rel = path.strip_prefix(root).ok()?;
+        let mut node = tree;
+        for c in rel.components() {
+            let name = c.as_os_str().to_string_lossy();
+            node = node.children.iter().find(|n| n.is_dir && *n.name == *name)?;
+        }
+        result_from(path, node)
+    };
+    if res.types.is_empty() && res.total > 0 {
+        let s = stats(&walk(path));
+        res.types = s.types;
+        res.ages = s.ages;
+    }
+    Some(res)
+}
+
+/// Puts a freshly scanned subtree into the cached tree, fixing up the
+/// totals of its ancestors. Returns the size/file deltas applied.
+fn graft(node: &mut Node, comps: &[String], new: Node) -> Option<(i64, i64)> {
+    let (first, rest) = comps.split_first()?;
+    let i = node.children.iter().position(|c| c.is_dir && *c.name == **first);
+    let d = if rest.is_empty() {
+        let (os, of) = i.map(|i| (node.children[i].size, node.children[i].files)).unwrap_or((0, 0));
+        let d = (new.size as i64 - os as i64, new.files as i64 - of as i64);
+        match i {
+            Some(i) => node.children[i] = new,
+            None => node.children.push(new),
+        }
+        d
+    } else {
+        graft(&mut node.children[i?], rest, new)?
+    };
+    node.size = (node.size as i64 + d.0).max(0) as u64;
+    node.files = (node.files as i64 + d.1).max(0) as u64;
+    node.children.sort_by(|a, b| b.size.cmp(&a.size));
+    Some(d)
+}
+
+/// Scans `path` and returns its direct children (each with its own largest
+/// children for a second ring) plus type and last-used breakdowns of the
+/// whole tree. Unless `fresh`, a folder inside the last scan is answered
+/// from memory.
+pub fn scan(path: &str, fresh: bool) -> anyhow::Result<ScanResult> {
     let root = PathBuf::from(path);
+    if !fresh {
+        if let Some(r) = cached(&root) {
+            return Ok(r);
+        }
+    }
     let md = fs::symlink_metadata(&root)?;
     if !md.is_dir() {
         anyhow::bail!("{path} is not a directory");
     }
-
-    let children: Vec<_> = fs::read_dir(&root)?.flatten().collect();
-    let results: Vec<(Entry, Acc)> = children
-        .par_iter()
-        .filter_map(|ent| {
-            let ft = ent.file_type().ok()?;
-            if ft.is_symlink() {
-                return None;
-            }
-            let p = ent.path();
-            let name = ent.file_name().to_string_lossy().into_owned();
-            let acc = if ft.is_dir() {
-                walk(&p)
-            } else {
-                let mut a = Acc::default();
-                a.add_file(&p, &ent.metadata().ok()?);
-                a
-            };
-            Some((
-                Entry {
-                    name,
-                    path: p.to_string_lossy().into_owned(),
-                    size: acc.size,
-                    is_dir: ft.is_dir(),
-                    files: acc.files,
-                },
-                acc,
-            ))
-        })
-        .collect();
-
-    let mut entries = Vec::with_capacity(results.len());
-    let mut total = Acc::default();
-    for (e, a) in results {
-        entries.push(e);
-        total = total.merge(a);
+    SCAN_PROGRESS.store(0, Ordering::Relaxed);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        SCAN_DEV.store(if cfg!(target_os = "macos") { 0 } else { md.dev() }, Ordering::Relaxed);
     }
-    entries.sort_by(|a, b| b.size.cmp(&a.size));
 
-    let mut types: Vec<TypeBucket> = total
-        .types
-        .into_iter()
-        .map(|(k, (size, files))| TypeBucket {
-            category: k.to_string(),
-            size,
-            files,
-        })
-        .collect();
-    types.sort_by(|a, b| b.size.cmp(&a.size));
+    let name: Box<str> = root.file_name().map(|n| n.to_string_lossy().into()).unwrap_or_default();
+    let (acc, mut node) = walk_tree(&root, name);
+    if node.stats.is_none() {
+        node.stats = Some(Box::new(stats(&acc)));
+    }
+    let res = result_from(&root, &node);
 
-    let ages = AGE_LABELS
-        .iter()
-        .zip(total.ages)
-        .map(|(l, (size, files))| TypeBucket {
-            category: l.to_string(),
-            size,
-            files,
-        })
-        .collect();
+    let mut g = TREE.lock().unwrap_or_else(|e| e.into_inner());
+    let grafted = g.as_mut().is_some_and(|(r, tree)| {
+        let Ok(rel) = root.strip_prefix(&*r) else { return false };
+        let comps: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        if comps.is_empty() {
+            return false;
+        }
+        // `node` is only moved in when the path is found.
+        graft_checked(tree, &comps, &mut node)
+    });
+    if !grafted {
+        *g = Some((root, node));
+    }
+    Ok(res)
+}
 
-    Ok(ScanResult {
-        ages,
-        path: root.to_string_lossy().into_owned(),
-        total: total.size,
-        files: total.files,
-        entries,
-        types,
-        skipped: total.skipped,
-    })
+/// `graft`, but leaves `new` in place when the path isn't in the tree.
+fn graft_checked(tree: &mut Node, comps: &[String], new: &mut Node) -> bool {
+    // Check the parent exists first so `new` isn't consumed on a miss.
+    let mut n = &*tree;
+    for c in &comps[..comps.len() - 1] {
+        match n.children.iter().find(|x| x.is_dir && *x.name == **c) {
+            Some(x) => n = x,
+            None => return false,
+        }
+    }
+    let taken = std::mem::replace(
+        new,
+        Node { name: "".into(), size: 0, files: 0, is_dir: true, skipped: 0, children: Vec::new(), stats: None },
+    );
+    graft(tree, comps, taken).is_some()
 }
 
 pub fn category_for(path: &Path) -> &'static str {
@@ -278,23 +506,42 @@ mod tests {
 
     #[test]
     fn scan_sizes_children_and_types() {
+        const M: usize = 1 << 20;
         let root = std::env::temp_dir().join(format!("sc-scan-test-{}", std::process::id()));
         fs::create_dir_all(root.join("sub/deeper")).unwrap();
-        fs::write(root.join("a.txt"), vec![0u8; 100]).unwrap();
-        fs::write(root.join("sub/b.png"), vec![0u8; 300]).unwrap();
-        fs::write(root.join("sub/deeper/c.png"), vec![0u8; 600]).unwrap();
+        fs::write(root.join("a.txt"), vec![0u8; M]).unwrap();
+        fs::write(root.join("sub/b.png"), vec![0u8; 3 * M]).unwrap();
+        fs::write(root.join("sub/deeper/c.png"), vec![0u8; 6 * M]).unwrap();
+        fs::write(root.join("sub/deeper/tiny.txt"), vec![0u8; 10]).unwrap();
+        let mb = |n: usize| (n * M) as u64;
 
-        let r = scan(root.to_str().unwrap()).unwrap();
-        assert_eq!(r.total, 1000);
-        assert_eq!(r.files, 3);
+        let r = scan(root.to_str().unwrap(), true).unwrap();
+        assert_eq!(r.total, mb(10) + 10);
+        assert_eq!(r.files, 4);
         assert_eq!(r.entries[0].name, "sub");
-        assert_eq!(r.entries[0].size, 900);
-        assert_eq!(r.ages[0].files, 3); // all just written
+        assert_eq!(r.entries[0].size, mb(9) + 10);
+        let kids: Vec<_> = r.entries[0].children.iter().map(|e| (e.name.as_str(), e.size)).collect();
+        assert_eq!(kids, [("deeper", mb(6) + 10), ("b.png", mb(3))]);
+        assert_eq!(r.ages[0].files, 4); // all just written
         let big = largest_files(root.to_str().unwrap(), Some("Images"), None, 1);
         assert_eq!(big.len(), 1);
-        assert_eq!(big[0].size, 600);
+        assert_eq!(big[0].size, mb(6));
         let images = r.types.iter().find(|t| t.category == "Images").unwrap();
-        assert_eq!((images.size, images.files), (900, 2));
+        assert_eq!((images.size, images.files), (mb(9), 2));
+
+        // Drilling down is answered from the cached tree, including the
+        // small file that isn't listed but still counts.
+        let deeper = root.join("sub/deeper");
+        let d = cached(&deeper).expect("subfolder should be cached");
+        assert_eq!(d.total, mb(6) + 10);
+        assert_eq!(d.entries.len(), 1);
+        assert_eq!(d.types.iter().map(|t| t.files).sum::<u64>(), 2);
+
+        // A fresh scan of a subfolder is grafted in and fixes the totals above it.
+        fs::write(deeper.join("d.png"), vec![0u8; 2 * M]).unwrap();
+        scan(deeper.to_str().unwrap(), true).unwrap();
+        let top = cached(&root).unwrap();
+        assert_eq!(top.total, mb(12) + 10);
 
         fs::remove_dir_all(&root).unwrap();
     }
