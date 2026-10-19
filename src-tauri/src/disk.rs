@@ -223,3 +223,27 @@ pub fn dir_size(path: &Path) -> (u64, u64) {
     let acc = walk(path);
     (acc.size, acc.files)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_sizes_children_and_types() {
+        let root = std::env::temp_dir().join(format!("sc-scan-test-{}", std::process::id()));
+        fs::create_dir_all(root.join("sub/deeper")).unwrap();
+        fs::write(root.join("a.txt"), vec![0u8; 100]).unwrap();
+        fs::write(root.join("sub/b.png"), vec![0u8; 300]).unwrap();
+        fs::write(root.join("sub/deeper/c.png"), vec![0u8; 600]).unwrap();
+
+        let r = scan(root.to_str().unwrap()).unwrap();
+        assert_eq!(r.total, 1000);
+        assert_eq!(r.files, 3);
+        assert_eq!(r.entries[0].name, "sub");
+        assert_eq!(r.entries[0].size, 900);
+        let images = r.types.iter().find(|t| t.category == "Images").unwrap();
+        assert_eq!((images.size, images.files), (900, 2));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+}
