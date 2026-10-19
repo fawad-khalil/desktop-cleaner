@@ -35,7 +35,7 @@
 
 <div class="app">
   <nav>
-    <div class="brand">StorageCleaner</div>
+    <div class="brand">DesktopCleaner</div>
     {#each tabs as t}
       <button class:active={active === t.id} onclick={() => go(t.id)}>
         <span class="icon">{t.icon}</span>{t.label}

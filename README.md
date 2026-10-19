@@ -1,4 +1,4 @@
-# StorageCleaner
+# DesktopCleaner
 
 A CleanMyMac-inspired disk analyzer and cleaner for Windows, macOS and Linux, built with
 Rust + Tauri v2 and a SvelteKit (TypeScript) frontend.

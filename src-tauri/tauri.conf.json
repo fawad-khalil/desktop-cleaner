@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "StorageCleaner",
+  "productName": "DesktopCleaner",
   "version": "0.1.0",
-  "identifier": "com.storagecleaner.app",
+  "identifier": "com.fawadkhalil.desktopcleaner",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "StorageCleaner",
+        "title": "DesktopCleaner",
         "width": 1280,
         "height": 820
       }

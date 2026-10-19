@@ -80,7 +80,7 @@ pub fn eligibility(mount: &str, device: &str, fs: &str) -> Option<String> {
             }
         }
         if exe_mount.is_some_and(|e| e.to_string_lossy().to_uppercase().starts_with(&m)) {
-            return Some("StorageCleaner is running from this drive".into());
+            return Some("DesktopCleaner is running from this drive".into());
         }
         None
     }
@@ -105,7 +105,7 @@ pub fn eligibility(mount: &str, device: &str, fs: &str) -> Option<String> {
             return Some("not a block device".into());
         }
         if exe_mount.is_some_and(|e| e.starts_with(mount)) {
-            return Some("StorageCleaner is running from this drive".into());
+            return Some("DesktopCleaner is running from this drive".into());
         }
         None
     }
@@ -177,7 +177,7 @@ pub fn plan(mount: &str, device: &str, fs: &str, label: &str) -> anyhow::Result<
         if letter.len() != 1 || !letter.as_bytes()[0].is_ascii_alphabetic() {
             anyhow::bail!("invalid drive letter");
         }
-        let log = std::env::temp_dir().join("storagecleaner-format.log");
+        let log = std::env::temp_dir().join("desktopcleaner-format.log");
         // Runs elevated. Letter, fs and label are already validated to
         // [A-Z], an allowlisted name and [A-Za-z0-9 _-].
         let inner = format!(
@@ -248,7 +248,7 @@ pub fn format(mount: &str, fs: &str, label: &str, confirm: &str) -> anyhow::Resu
     }
     #[cfg(windows)]
     {
-        let log = std::env::temp_dir().join("storagecleaner-format.log");
+        let log = std::env::temp_dir().join("desktopcleaner-format.log");
         if let Ok(msg) = std::fs::read_to_string(&log) {
             let _ = std::fs::remove_file(&log);
             anyhow::bail!("format failed: {}", msg.trim());

@@ -208,9 +208,9 @@
             <code class="cmd">{l.command}</code>
             <button onclick={() => copy(l.command!)}>{copied === l.command ? "Copied" : "Copy"}</button>
           </div>
-          <span class="note">Run this in a terminal yourself. StorageCleaner never runs commands as root.</span>
+          <span class="note">Run this in a terminal yourself. DesktopCleaner never runs commands as root.</span>
         {:else if l.action === "manual"}
-          <span class="note">This lives in a protected system area, so StorageCleaner won't delete it. Remove it in Finder if you don't need it.</span>
+          <span class="note">This lives in a protected system area, so DesktopCleaner won't delete it. Remove it in Finder if you don't need it.</span>
         {/if}
       </div>
     {/each}
