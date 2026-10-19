@@ -270,9 +270,34 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unix_system_paths_are_protected() {
-        for p in ["/usr/bin/ls", "/etc/passwd", "/boot/vmlinuz", "/var/lib/dpkg", "/proc/1"] {
+        for p in ["/usr/bin/ls", "/etc/passwd", "/var/lib/dpkg", "/opt/tool"] {
             assert!(!check(Path::new(p)).is_allowed(), "{p} should be protected");
         }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn linux_system_paths_are_protected() {
+        for p in ["/boot/vmlinuz", "/proc/1", "/sys/kernel", "/snap/core"] {
+            assert!(!check(Path::new(p)).is_allowed(), "{p} should be protected");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_system_paths_are_protected() {
+        for p in [
+            "/System/Library/Kernels/kernel",
+            "/Library/Preferences/com.apple.loginwindow.plist",
+            "/Applications/Safari.app",
+            "/private/etc/hosts",
+            "/usr/lib/dyld",
+            "/system/library",
+        ] {
+            assert!(!check(Path::new(p)).is_allowed(), "{p} should be protected");
+        }
+        let keychains = dirs::home_dir().unwrap().join("Library/Keychains/login.keychain-db");
+        assert!(!check(&keychains).is_allowed());
     }
 
     #[test]
