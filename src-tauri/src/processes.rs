@@ -1,9 +1,10 @@
 //! Process listing via sysinfo. The `System` is kept alive between calls so
 //! CPU usage (which needs two samples) is meaningful.
 //!
-//! Per-process network *bytes* aren't exposed by any OS without admin rights
-//! or packet capture, so per process we report open connections (via
-//! netstat2) and system-wide throughput separately.
+//! Per-process network bytes come from `nettop` on macOS, which reports them
+//! without admin rights. Windows and Linux don't expose them without admin
+//! rights or packet capture, so there we report open connections (via
+//! netstat2) and system-wide throughput.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -15,6 +16,79 @@ pub struct Inner {
     sys: System,
     nets: Networks,
     last: Instant,
+    /// Per-process traffic, filled by a background reader (macOS only).
+    traffic: Option<Traffic>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Counters {
+    rx: u64,
+    tx: u64,
+    rx_rate: f64,
+    tx_rate: f64,
+    seen: Option<Instant>,
+}
+
+type Traffic = std::sync::Arc<Mutex<HashMap<u32, Counters>>>;
+
+/// Runs `nettop` over and over in the background (each run takes about 5 s
+/// and reports cumulative bytes per process) and derives rates from
+/// consecutive runs. One-shot runs are used because nettop block-buffers
+/// its streaming output when it isn't writing to a terminal.
+#[cfg(target_os = "macos")]
+fn start_traffic() -> Option<Traffic> {
+    use std::process::{Command, Stdio};
+    let map: Traffic = Default::default();
+    let shared = map.clone();
+    std::thread::spawn(move || {
+        let mut failures = 0;
+        while failures < 5 {
+            let out = Command::new("/usr/bin/nettop")
+                .args(["-P", "-x", "-J", "bytes_in,bytes_out", "-L", "1"])
+                .stderr(Stdio::null())
+                .output();
+            let Ok(out) = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()) else {
+                failures += 1;
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                continue;
+            };
+            let now = Instant::now();
+            let mut m = shared.lock().unwrap_or_else(|e| e.into_inner());
+            for line in out.lines() {
+                if let Some((pid, rx, tx)) = parse_nettop(line) {
+                    let c = m.entry(pid).or_default();
+                    if let Some(prev) = c.seen {
+                        let dt = now.duration_since(prev).as_secs_f64().max(0.5);
+                        c.rx_rate = rx.saturating_sub(c.rx) as f64 / dt;
+                        c.tx_rate = tx.saturating_sub(c.tx) as f64 / dt;
+                    }
+                    c.rx = rx;
+                    c.tx = tx;
+                    c.seen = Some(now);
+                }
+            }
+            // Forget processes that are gone.
+            m.retain(|_, c| c.seen == Some(now));
+        }
+    });
+    Some(map)
+}
+
+/// "Google Chrome H.1234,5678,910," → (1234, 5678, 910). A leading
+/// timestamp column, as in streaming mode, is skipped.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_nettop(line: &str) -> Option<(u32, u64, u64)> {
+    let mut f: Vec<&str> = line.split(',').collect();
+    if f.first().is_some_and(|t| t.contains(':')) {
+        f.remove(0);
+    }
+    let pid = f.first()?.rsplit_once('.')?.1.parse().ok()?;
+    Some((pid, f.get(1)?.parse().ok()?, f.get(2)?.parse().ok()?))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_traffic() -> Option<Traffic> {
+    None
 }
 
 pub struct ProcState(pub Mutex<Inner>);
@@ -29,6 +103,7 @@ impl ProcState {
             sys,
             nets: Networks::new_with_refreshed_list(),
             last: Instant::now(),
+            traffic: None,
         }))
     }
 }
@@ -56,6 +131,12 @@ pub struct ProcInfo {
     pub kind: Kind,
     /// Runs as the current user (only those can be quit).
     pub mine: bool,
+    /// Bytes received/sent since the process started, and the current rate
+    /// in bytes per second; `None` where the OS doesn't report it.
+    pub net_rx: Option<u64>,
+    pub net_tx: Option<u64>,
+    pub net_rx_rate: Option<f64>,
+    pub net_tx_rate: Option<f64>,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -269,6 +350,8 @@ pub struct ProcSnapshot {
     pub net_rx_rate: f64,
     pub net_tx_rate: f64,
     pub net_available: bool,
+    /// Whether per-process traffic numbers are available.
+    pub net_per_process: bool,
 }
 
 /// (established, listening) per pid.
@@ -299,7 +382,14 @@ fn socket_counts() -> Option<HashMap<u32, (u32, u32)>> {
 pub fn snapshot(state: &ProcState) -> ProcSnapshot {
     let sockets = socket_counts();
     let mut g = state.0.lock().unwrap();
-    let Inner { sys, nets, last } = &mut *g;
+    let Inner { sys, nets, last, traffic } = &mut *g;
+    if traffic.is_none() {
+        *traffic = start_traffic();
+    }
+    let counters: HashMap<u32, Counters> = traffic
+        .as_ref()
+        .map(|t| t.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        .unwrap_or_default();
 
     sys.refresh_processes(ProcessesToUpdate::All, true);
     sys.refresh_memory();
@@ -341,6 +431,10 @@ pub fn snapshot(state: &ProcState) -> ProcSnapshot {
                 app: class.app.clone(),
                 kind: class.kind,
                 mine: *mine,
+                net_rx: traffic.as_ref().map(|_| counters.get(&pid).map_or(0, |c| c.rx)),
+                net_tx: traffic.as_ref().map(|_| counters.get(&pid).map_or(0, |c| c.tx)),
+                net_rx_rate: traffic.as_ref().map(|_| counters.get(&pid).map_or(0.0, |c| c.rx_rate)),
+                net_tx_rate: traffic.as_ref().map(|_| counters.get(&pid).map_or(0.0, |c| c.tx_rate)),
             }
         })
         .collect();
@@ -353,6 +447,7 @@ pub fn snapshot(state: &ProcState) -> ProcSnapshot {
         net_rx_rate: rx as f64 / secs,
         net_tx_rate: tx as f64 / secs,
         net_available: sockets.is_some(),
+        net_per_process: traffic.is_some(),
     }
 }
 
@@ -372,6 +467,15 @@ mod tests {
         if let Some(init) = snap.processes.iter().find(|p| p.pid == 1) {
             assert_eq!(init.kind, Kind::System);
         }
+        #[cfg(target_os = "macos")]
+        {
+            // The first nettop run takes about 5 s; by then some process
+            // (mDNSResponder at least) has moved bytes.
+            std::thread::sleep(std::time::Duration::from_secs(7));
+            let snap = snapshot(&st);
+            assert!(snap.net_per_process);
+            assert!(snap.processes.iter().any(|p| p.net_rx.unwrap_or(0) > 0), "no per-process traffic seen");
+        }
         if std::env::var_os("SHOW_PROCS").is_some() {
             let mut v: Vec<_> = snap.processes.iter().map(|p| (format!("{:?}", p.kind), p.app.clone(), p.name.clone())).collect();
             v.sort();
@@ -380,6 +484,13 @@ mod tests {
                 eprintln!("{x:?}");
             }
         }
+    }
+
+    #[test]
+    fn parses_nettop_lines() {
+        assert_eq!(parse_nettop("Google Chrome H.1234,5678,910,"), Some((1234, 5678, 910)));
+        assert_eq!(parse_nettop("12:00:00.5,mDNSResponder.561,15,10,"), Some((561, 15, 10)));
+        assert_eq!(parse_nettop(",bytes_in,bytes_out,"), None);
     }
 
     #[test]
