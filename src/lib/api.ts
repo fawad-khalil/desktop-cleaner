@@ -16,6 +16,8 @@ export interface Entry {
   size: number;
   is_dir: boolean;
   files: number;
+  /** Largest items one level down (only on a scan's direct children). */
+  children?: Entry[];
 }
 
 export interface TypeBucket {
@@ -85,7 +87,11 @@ export interface AppInfo {
 
 export const api = {
   listDrives: () => invoke<DriveInfo[]>("list_drives"),
-  scanDir: (path: string) => invoke<ScanResult>("scan_dir", { path }),
+  /** Folders inside the last scan are answered from memory unless `fresh`. */
+  scanDir: (path: string, fresh = false) => invoke<ScanResult>("scan_dir", { path, fresh }),
+  /** Files counted so far by the scan in progress. */
+  scanProgress: () => invoke<number>("scan_progress"),
+  openFullDiskAccess: () => invoke<void>("open_full_disk_access"),
   largestFiles: (path: string, category: string | null, age: number | null, limit = 100) =>
     invoke<FileItem[]>("largest_files", { path, category, age, limit }),
   listProcesses: () => invoke<ProcSnapshot>("list_processes"),

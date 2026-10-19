@@ -1,14 +1,20 @@
 <script lang="ts">
-  import { api, type DriveInfo, type FileItem, type ScanResult } from "../api";
-  import { ago, bytes, pct } from "../format";
+  import { api, type DriveInfo, type Entry, type FileItem, type ScanResult } from "../api";
+  import { ago, bytes, freeColor, pct, systemColor, typeColors } from "../format";
   import Pie, { type Slice } from "../Pie.svelte";
+  import StorageBar, { type Segment } from "../StorageBar.svelte";
+  import Sunburst from "../Sunburst.svelte";
+
+  const isMac = navigator.userAgent.includes("Mac");
 
   let drives = $state<DriveInfo[]>([]);
   let error = $state("");
+  /** Whole-drive scans by mount point; they colour the storage bars. */
+  let driveScans = $state<Record<string, ScanResult>>({});
   let scan = $state<ScanResult | null>(null);
   let scanning = $state("");
-  // Scans are expensive; keep results so moving around the tree is instant.
-  const cache = new Map<string, ScanResult>();
+  let progress = $state(0);
+  let autoStarted = false;
 
   let filesTitle = $state("");
   let files = $state<FileItem[] | null>(null);
@@ -17,22 +23,32 @@
   const ageColors = ["#34c38f", "#8bc34a", "#f7b924", "#ff9f43", "#e5484d"];
 
   $effect(() => {
-    api.listDrives().then((d) => (drives = d)).catch((e) => (error = String(e)));
+    api.listDrives().then((d) => {
+      drives = d;
+      // Start on the system drive so the breakdown is there without a click.
+      const sys = d.find((x) => x.mount_point === "/" || /^c:\\?$/i.test(x.mount_point)) ?? d[0];
+      if (sys && !autoStarted) {
+        autoStarted = true;
+        open(sys.mount_point);
+      }
+    }).catch((e) => (error = String(e)));
+  });
+
+  $effect(() => {
+    if (!scanning) return;
+    const id = setInterval(() => api.scanProgress().then((n) => (progress = n)).catch(() => {}), 500);
+    return () => clearInterval(id);
   });
 
   async function open(path: string, fresh = false) {
     files = null;
     filesTitle = "";
     error = "";
-    const hit = !fresh && cache.get(path);
-    if (hit) {
-      scan = hit;
-      return;
-    }
     scanning = path;
+    progress = 0;
     try {
-      const res = await api.scanDir(path);
-      cache.set(path, res);
+      const res = await api.scanDir(path, fresh);
+      if (drives.some((d) => d.mount_point === res.path)) driveScans[res.path] = res;
       scan = res;
     } catch (e) {
       error = String(e);
@@ -41,20 +57,55 @@
     }
   }
 
+  const sep = $derived(scan?.path.includes("\\") ? "\\" : "/");
+
   /** Cumulative path segments for the breadcrumb. */
   const crumbs = $derived.by(() => {
     if (!scan) return [];
-    const p = scan.path;
-    const sep = p.includes("\\") ? "\\" : "/";
-    const parts = p.split(sep).filter(Boolean);
+    const parts = scan.path.split(sep).filter(Boolean);
     const out: { label: string; path: string }[] = [];
     let acc = sep === "/" ? "/" : "";
-    if (sep === "/") out.push({ label: "/", path: "/" });
+    if (sep === "/") out.push({ label: driveFor("/")?.name || "/", path: "/" });
     for (const part of parts) {
       acc = sep === "/" ? (acc.endsWith("/") ? acc + part : acc + "/" + part) : acc ? (acc.endsWith("\\") ? acc + part : acc + "\\" + part) : part + "\\";
       out.push({ label: part, path: acc });
     }
     return out;
+  });
+
+  function driveFor(mount: string) {
+    return drives.find((d) => d.mount_point === mount);
+  }
+
+  const used = (d: DriveInfo) => d.total - d.available;
+
+  /** Used space we couldn't attribute to files: OS data, other users,
+   * protected folders, snapshots… */
+  function hidden(d: DriveInfo, s: ScanResult) {
+    return Math.max(0, used(d) - s.total);
+  }
+
+  function segments(d: DriveInfo): Segment[] {
+    const s = driveScans[d.mount_point];
+    const free: Segment = { label: "Free", value: d.available, color: freeColor };
+    if (!s) return [{ label: "Used", value: used(d), color: "var(--accent)" }, free];
+    // Hard links and clones can make files add up to more than is used.
+    const k = s.total > used(d) ? used(d) / s.total : 1;
+    const segs: Segment[] = s.types.map((t) => ({ label: t.category, value: t.size * k, color: typeColors[t.category] ?? "#7f8c9a" }));
+    segs.push({ label: "System & other", value: hidden(d, s), color: systemColor, hint: hiddenHint });
+    segs.push(free);
+    return segs;
+  }
+
+  const hiddenHint = isMac
+    ? "macOS system data, swap, snapshots and folders DesktopCleaner isn't allowed to read"
+    : "System data and folders DesktopCleaner isn't allowed to read";
+
+  const extra = $derived.by(() => {
+    if (!scan) return null;
+    const d = driveFor(scan.path);
+    if (!d) return null;
+    return { label: "System & other", value: hidden(d, scan), color: systemColor, hint: hiddenHint };
   });
 
   async function showFiles(title: string, category: string | null, age: number | null) {
@@ -71,21 +122,8 @@
     }
   }
 
-  const driveSlices = (d: DriveInfo): Slice[] => [
-    { label: "Used", value: d.total - d.available, color: "#4f8cff" },
-    { label: "Free", value: d.available, color: "#34c38f" },
-  ];
-
-  const folderSlices = $derived<Slice[]>(
-    (scan?.entries ?? []).map((e) => ({
-      label: e.name + (e.is_dir ? "/" : ""),
-      value: e.size,
-      key: e.path,
-      clickable: e.is_dir,
-    })),
-  );
   const typeSlices = $derived<Slice[]>(
-    (scan?.types ?? []).map((t) => ({ label: t.category, value: t.size, key: t.category })),
+    (scan?.types ?? []).map((t) => ({ label: t.category, value: t.size, key: t.category, color: typeColors[t.category] })),
   );
   const ageSlices = $derived<Slice[]>(
     (scan?.ages ?? []).map((t, i) => ({ label: t.category, value: t.size, key: String(i), color: ageColors[i] })),
@@ -93,56 +131,86 @@
   const oldShare = $derived(
     scan ? (scan.ages.slice(2).reduce((a, b) => a + b.size, 0) / (scan.total || 1)) * 100 : 0,
   );
+  const smaller = $derived(scan ? Math.max(0, scan.total - scan.entries.reduce((a, e) => a + e.size, 0)) : 0);
+  const folderName = $derived(crumbs.at(-1)?.label ?? "");
 </script>
 
 <header>
   <h1>Disk usage</h1>
-  <p class="muted">Pick a drive to see what is taking up space. Click any slice to dig deeper.</p>
+  <p class="muted">See what fills each drive, then click any part of the chart to dig deeper, all the way down to single files.</p>
 </header>
 
 {#if error}<p class="error">{error}</p>{/if}
 
-{#if !scan}
-  <div class="grid">
-    {#each drives as d}
-      <div class="card">
-        <div class="row">
-          <strong>{d.mount_point}</strong>
-          <span class="muted">{d.name || d.kind} · {d.file_system}</span>
-        </div>
-        <Pie slices={driveSlices(d)} />
-        <p class="muted">
-          {bytes(d.total - d.available)} used of {bytes(d.total)} ({pct(d.total - d.available, d.total)})
-        </p>
-        <button class="primary" disabled={!!scanning} onclick={() => open(d.mount_point)}>
-          {scanning === d.mount_point ? "Scanning…" : "Analyze"}
-        </button>
+<div class="grid drives">
+  {#each drives as d}
+    {@const s = driveScans[d.mount_point]}
+    <div class="card" class:current={scan && crumbs[0]?.path === d.mount_point}>
+      <div class="row">
+        <strong>{d.name || d.mount_point}</strong>
+        <span class="muted">{d.mount_point} · {d.file_system}{d.removable ? " · removable" : ""}</span>
       </div>
-    {/each}
-  </div>
-  {#if scanning}
-    <p class="muted">Scanning {scanning}. Large drives can take a minute or two.</p>
-  {/if}
-{:else}
+      <div class="row usage">
+        <span><strong>{bytes(used(d))}</strong> <span class="muted">used of {bytes(d.total)}</span></span>
+        <span class="muted">{bytes(d.available)} free ({pct(d.available, d.total)})</span>
+      </div>
+      <StorageBar segments={segments(d)} total={d.total} />
+      <div class="actions">
+        {#if scanning === d.mount_point}
+          <span class="muted">Scanning… {progress.toLocaleString()} files so far</span>
+        {:else if s}
+          <button onclick={() => open(d.mount_point)} disabled={!!scanning}>Explore</button>
+        {:else}
+          <button class="primary" disabled={!!scanning} onclick={() => open(d.mount_point)}>Analyze</button>
+          <span class="muted">to break down used space</span>
+        {/if}
+      </div>
+    </div>
+  {/each}
+</div>
+
+{#if scanning && !driveFor(scanning)}
+  <p class="muted">Scanning {scanning}… {progress.toLocaleString()} files so far</p>
+{:else if scanning && !scan}
+  <p class="muted">The first scan reads every file on the drive and can take a few minutes. It only reads; nothing is changed.</p>
+{/if}
+
+{#if scan}
   <div class="toolbar">
-    <button onclick={() => (scan = null)} disabled={!!scanning}>Drives</button>
-    <nav class="crumbs">
+    <div class="crumbs">
       {#each crumbs as c, i}
         {#if i > 0}<span class="muted">›</span>{/if}
         <button class="link" disabled={!!scanning} onclick={() => open(c.path)}>{c.label}</button>
       {/each}
-    </nav>
-    <span class="grow"></span>
-    <span class="muted">{bytes(scan.total)} · {scan.files.toLocaleString()} files</span>
-    {#if scan.skipped}<span class="muted" title="Folders we were not allowed to read">· {scan.skipped} unreadable</span>{/if}
-    <button onclick={() => open(scan!.path, true)} disabled={!!scanning}>Rescan</button>
-  </div>
-  {#if scanning}<p class="muted">Scanning {scanning}…</p>{/if}
-
-  <div class="grid three-pies">
-    <div class="card">
-      <Pie title="By folder" slices={folderSlices} max={12} onselect={(s) => s.key && open(s.key)} />
     </div>
+    <span class="grow"></span>
+    <span class="muted">{bytes(scan.total)} in {scan.files.toLocaleString()} files</span>
+    <button onclick={() => open(scan!.path, true)} disabled={!!scanning} title="Read this folder from disk again">Rescan</button>
+  </div>
+
+  {#if isMac && scan.skipped && driveFor(scan.path)}
+    <div class="card hint">
+      macOS kept DesktopCleaner out of {scan.skipped.toLocaleString()} protected folders (Mail, Messages, other apps' data…), so they
+      count as <em>System &amp; other</em>. For a complete picture, allow Full Disk Access and rescan.
+      <button class="link" onclick={() => api.openFullDiskAccess()}>Open Privacy settings</button>
+    </div>
+  {/if}
+
+  <div class="card">
+    <h3>Used space in {folderName}</h3>
+    <Sunburst
+      entries={scan.entries}
+      total={scan.total}
+      name={folderName}
+      {extra}
+      canUp={crumbs.length > 1}
+      onup={() => open(crumbs[crumbs.length - 2].path)}
+      onselect={(e: Entry) => open(e.path)}
+    />
+    <p class="note">Inner ring: what's directly in this folder. Outer ring: what's inside each of those. Click a folder to open it; click the middle to go back up.</p>
+  </div>
+
+  <div class="grid two">
     <div class="card">
       <Pie title="By file type" slices={typeSlices} max={12}
         onselect={(s) => s.key && showFiles(`Largest files: ${s.label}`, s.key, null)} />
@@ -193,13 +261,22 @@
             <td class="num">{pct(e.size, scan.total)}</td>
           </tr>
         {/each}
+        {#if smaller > 0}
+          <tr class="muted"><td>Smaller items (under 1 MB each)</td><td class="num">{bytes(smaller)}</td><td></td><td class="num">{pct(smaller, scan.total)}</td></tr>
+        {/if}
       </tbody>
     </table>
   </div>
 {/if}
 
 <style>
+  .drives { grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); margin-bottom: 16px; }
+  .card.current { border-color: var(--accent); }
+  .usage { margin: 6px 0 0; }
+  .usage strong { font-size: 18px; }
+  .actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
   .crumbs { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .grow { flex: 1; }
-  .three-pies { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+  h3 { margin: 0 0 12px; font-size: 14px; color: var(--muted); font-weight: 600; }
+  .hint { border-left: 4px solid var(--warn); font-size: 13px; }
 </style>

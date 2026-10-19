@@ -38,6 +38,18 @@ fn scan_progress() -> u64 {
     disk::scan_progress()
 }
 
+/// Opens System Settings at Privacy & Security › Full Disk Access (macOS),
+/// where the user can let the app read protected folders.
+#[tauri::command]
+fn open_full_disk_access() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn largest_files(
     path: String,
@@ -124,6 +136,7 @@ pub fn run() {
             list_drives,
             scan_dir,
             scan_progress,
+            open_full_disk_access,
             largest_files,
             list_processes,
             list_caches,

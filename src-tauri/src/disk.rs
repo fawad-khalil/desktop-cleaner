@@ -251,8 +251,10 @@ const MAX_FILES_KEPT: usize = 64;
 /// on demand, which is quick.
 const STATS_MIN: u64 = 64 << 20;
 
-/// The last scanned tree and the path it was scanned from.
-static TREE: Mutex<Option<(PathBuf, Node)>> = Mutex::new(None);
+/// Recently scanned trees and the paths they were scanned from (e.g. one
+/// per drive), newest last.
+static TREES: Mutex<Vec<(PathBuf, Node)>> = Mutex::new(Vec::new());
+const MAX_TREES: usize = 4;
 
 fn stats(acc: &Acc) -> Stats {
     let mut types: Vec<TypeBucket> = acc
@@ -368,15 +370,16 @@ fn result_from(path: &Path, node: &Node) -> ScanResult {
 /// Finds `path` in the cached tree.
 fn cached(path: &Path) -> Option<ScanResult> {
     let mut res = {
-        let g = TREE.lock().ok()?;
-        let (root, tree) = g.as_ref()?;
-        let rel = path.strip_prefix(root).ok()?;
-        let mut node = tree;
-        for c in rel.components() {
-            let name = c.as_os_str().to_string_lossy();
-            node = node.children.iter().find(|n| n.is_dir && *n.name == *name)?;
-        }
-        result_from(path, node)
+        let g = TREES.lock().ok()?;
+        g.iter().rev().find_map(|(root, tree)| {
+            let rel = path.strip_prefix(root).ok()?;
+            let mut node = tree;
+            for c in rel.components() {
+                let name = c.as_os_str().to_string_lossy();
+                node = node.children.iter().find(|n| n.is_dir && *n.name == *name)?;
+            }
+            Some(result_from(path, node))
+        })?
     };
     if res.types.is_empty() && res.total > 0 {
         let s = stats(&walk(path));
@@ -437,18 +440,20 @@ pub fn scan(path: &str, fresh: bool) -> anyhow::Result<ScanResult> {
     }
     let res = result_from(&root, &node);
 
-    let mut g = TREE.lock().unwrap_or_else(|e| e.into_inner());
-    let grafted = g.as_mut().is_some_and(|(r, tree)| {
+    let mut g = TREES.lock().unwrap_or_else(|e| e.into_inner());
+    let grafted = g.iter_mut().any(|(r, tree)| {
         let Ok(rel) = root.strip_prefix(&*r) else { return false };
         let comps: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-        if comps.is_empty() {
-            return false;
-        }
         // `node` is only moved in when the path is found.
-        graft_checked(tree, &comps, &mut node)
+        !comps.is_empty() && graft_checked(tree, &comps, &mut node)
     });
     if !grafted {
-        *g = Some((root, node));
+        // A new root replaces any trees it contains.
+        g.retain(|(r, _)| !r.starts_with(&root));
+        g.push((root, node));
+        if g.len() > MAX_TREES {
+            g.remove(0);
+        }
     }
     Ok(res)
 }
