@@ -43,6 +43,8 @@ export interface ProcInfo {
   disk_read: number;
   disk_written: number;
   run_time: number;
+  connections: number;
+  listening: number;
 }
 
 export interface ProcSnapshot {
@@ -51,6 +53,9 @@ export interface ProcSnapshot {
   used_memory: number;
   cpu: number;
   cpu_count: number;
+  net_rx_rate: number;
+  net_tx_rate: number;
+  net_available: boolean;
 }
 
 export interface CacheInfo {
