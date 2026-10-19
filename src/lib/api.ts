@@ -30,7 +30,14 @@ export interface ScanResult {
   files: number;
   entries: Entry[];
   types: TypeBucket[];
+  ages: TypeBucket[];
   skipped: number;
+}
+
+export interface FileItem {
+  path: string;
+  size: number;
+  last_used: number | null;
 }
 
 export interface ProcInfo {
@@ -79,6 +86,8 @@ export interface AppInfo {
 export const api = {
   listDrives: () => invoke<DriveInfo[]>("list_drives"),
   scanDir: (path: string) => invoke<ScanResult>("scan_dir", { path }),
+  largestFiles: (path: string, category: string | null, age: number | null, limit = 100) =>
+    invoke<FileItem[]>("largest_files", { path, category, age, limit }),
   listProcesses: () => invoke<ProcSnapshot>("list_processes"),
   listCaches: () => invoke<CacheInfo[]>("list_caches"),
   listApps: () => invoke<AppInfo[]>("list_apps"),

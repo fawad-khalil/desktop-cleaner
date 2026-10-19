@@ -33,6 +33,19 @@ async fn scan_dir(path: String) -> Result<disk::ScanResult, String> {
 }
 
 #[tauri::command]
+async fn largest_files(
+    path: String,
+    category: Option<String>,
+    age: Option<usize>,
+    limit: Option<usize>,
+) -> Result<Vec<disk::FileItem>, String> {
+    blocking(move || {
+        Ok(disk::largest_files(&path, category.as_deref(), age, limit.unwrap_or(100)))
+    })
+    .await
+}
+
+#[tauri::command]
 fn list_processes(state: State<'_, ProcState>) -> processes::ProcSnapshot {
     processes::snapshot(&state)
 }
@@ -87,6 +100,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_drives,
             scan_dir,
+            largest_files,
             list_processes,
             list_caches,
             list_apps,
