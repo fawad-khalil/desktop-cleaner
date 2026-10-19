@@ -68,6 +68,12 @@ fn list_processes(state: State<'_, ProcState>) -> processes::ProcSnapshot {
     processes::snapshot(&state)
 }
 
+/// Asks the given processes to quit. System processes are refused.
+#[tauri::command]
+fn quit_processes(state: State<'_, ProcState>, pids: Vec<u32>) -> Result<u32, String> {
+    processes::quit(&state, &pids).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn list_caches() -> Result<Vec<caches::CacheInfo>, String> {
     blocking(|| Ok(caches::list())).await
@@ -139,6 +145,7 @@ pub fn run() {
             open_full_disk_access,
             largest_files,
             list_processes,
+            quit_processes,
             list_caches,
             list_apps,
             cleanup_preview,
