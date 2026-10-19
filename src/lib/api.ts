@@ -59,6 +59,11 @@ export interface ProcInfo {
   kind: "app" | "background" | "system";
   /** Runs as the current user. */
   mine: boolean;
+  /** Bytes since the process started and current bytes/s; null where the OS doesn't report them. */
+  net_rx: number | null;
+  net_tx: number | null;
+  net_rx_rate: number | null;
+  net_tx_rate: number | null;
 }
 
 export interface ProcSnapshot {
@@ -70,6 +75,8 @@ export interface ProcSnapshot {
   net_rx_rate: number;
   net_tx_rate: number;
   net_available: boolean;
+  /** Per-process traffic numbers are available (macOS). */
+  net_per_process: boolean;
 }
 
 export interface CacheInfo {

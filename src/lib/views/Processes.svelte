@@ -16,15 +16,23 @@
     /** Smoothed over recent refreshes so the numbers don't jump around. */
     cpu: number;
     connections: number;
+    rx: number;
+    tx: number;
+    rxRate: number;
+    txRate: number;
     canQuit: boolean;
     impact: Level;
+    /** Who launched it: the parents of its top-level processes. */
+    startedBy: string[];
+    /** Its processes as a parent → child tree, for the expanded view. */
+    tree: { p: ProcInfo; depth: number }[];
   }
 
   let snap = $state<ProcSnapshot | null>(null);
   let error = $state("");
   let notice = $state("");
   let view = $state<"simple" | "advanced">("simple");
-  let sortKey = $state<"impact" | "memory" | "cpu" | "name">("impact");
+  let sortKey = $state<"impact" | "memory" | "cpu" | "net" | "name">("impact");
   let filter = $state("");
   let showSystem = $state(false);
   let expanded = $state<Set<string>>(new Set());
@@ -65,6 +73,42 @@
   const cpuLevel = (cpu: number): Level => (cpu >= 25 ? "High" : cpu >= 5 ? "Medium" : "Low");
   const rank: Record<Level, number> = { High: 3, Medium: 2, Low: 1 };
 
+  const isMac = navigator.userAgent.includes("Mac");
+
+  /** A friendly name for the process that launched another. */
+  function starterName(parent: ProcInfo | undefined): string {
+    if (!parent) return "—";
+    if (parent.pid === 1 || parent.name === "launchd") return isMac ? "macOS (launchd)" : parent.name === "systemd" ? "systemd" : "System";
+    if (/^services\.exe$/i.test(parent.name)) return "Windows services";
+    if (/^explorer\.exe$/i.test(parent.name)) return "You (desktop)";
+    return parent.app;
+  }
+
+  /** Orders a group's processes parent-first, children indented below. */
+  function treeOf(procs: ProcInfo[]) {
+    const pids = new Set(procs.map((p) => p.pid));
+    const kids = new Map<number, ProcInfo[]>();
+    const roots: ProcInfo[] = [];
+    for (const p of procs) {
+      if (p.parent != null && p.parent !== p.pid && pids.has(p.parent)) {
+        if (!kids.has(p.parent)) kids.set(p.parent, []);
+        kids.get(p.parent)!.push(p);
+      } else roots.push(p);
+    }
+    const tree: { p: ProcInfo; depth: number }[] = [];
+    const seen = new Set<number>();
+    const walk = (p: ProcInfo, depth: number) => {
+      if (seen.has(p.pid)) return;
+      seen.add(p.pid);
+      tree.push({ p, depth });
+      for (const c of kids.get(p.pid) ?? []) walk(c, depth + 1);
+    };
+    roots.forEach((r) => walk(r, 0));
+    return { roots, tree };
+  }
+
+  const byPid = $derived(new Map((snap?.processes ?? []).map((p) => [p.pid, p])));
+
   const groups = $derived.by(() => {
     if (!snap) return [] as AppGroup[];
     const m = new Map<string, AppGroup>();
@@ -72,19 +116,26 @@
       const key = `${p.kind}:${p.app}`;
       let g = m.get(key);
       if (!g) {
-        g = { key, name: p.app, kind: p.kind, procs: [], memory: 0, cpu: 0, connections: 0, canQuit: true, impact: "Low" };
+        g = { key, name: p.app, kind: p.kind, procs: [], memory: 0, cpu: 0, connections: 0, rx: 0, tx: 0, rxRate: 0, txRate: 0, canQuit: true, impact: "Low", startedBy: [], tree: [] };
         m.set(key, g);
       }
       g.procs.push(p);
       g.memory += p.memory;
       g.cpu += p.cpu;
       g.connections += p.connections;
+      g.rx += p.net_rx ?? 0;
+      g.tx += p.net_tx ?? 0;
+      g.rxRate += p.net_rx_rate ?? 0;
+      g.txRate += p.net_tx_rate ?? 0;
       g.canQuit &&= p.mine && p.kind !== "system";
     }
     for (const g of m.values()) {
       g.cpu = cpuAvg.get(g.key) ?? g.cpu;
       g.impact = impactOf(g.memory, g.cpu, snap.total_memory);
       g.procs.sort((a, b) => b.memory - a.memory);
+      const { roots, tree } = treeOf(g.procs);
+      g.tree = tree;
+      g.startedBy = [...new Set(roots.map((r) => starterName(r.parent == null ? undefined : byPid.get(r.parent))))];
     }
     return [...m.values()];
   });
@@ -96,6 +147,7 @@
       impact: (a: AppGroup, b: AppGroup) => rank[b.impact] - rank[a.impact] || b.memory - a.memory,
       memory: (a: AppGroup, b: AppGroup) => b.memory - a.memory,
       cpu: (a: AppGroup, b: AppGroup) => b.cpu - a.cpu,
+      net: (a: AppGroup, b: AppGroup) => b.rxRate + b.txRate - (a.rxRate + a.txRate) || b.rx + b.tx - (a.rx + a.tx) || b.connections - a.connections,
       name: (a: AppGroup, b: AppGroup) => a.name.localeCompare(b.name),
     }[sortKey];
     return out.sort(by);
@@ -124,6 +176,9 @@
     const hog = [...quittable].sort((a, b) => b.cpu - a.cpu)[0];
     if (hog && hog.cpu >= 25 && !out.some((t) => t.group === hog))
       out.push({ text: `${hog.name} is keeping your processor busy (${hog.cpu.toFixed(0)}%). That drains battery and can make other apps feel slow.`, group: hog });
+    const net = [...groups].sort((a, b) => b.rxRate + b.txRate - (a.rxRate + a.txRate))[0];
+    if (net && net.rxRate + net.txRate >= 1024 * 1024)
+      out.push({ text: `${net.name} is using your internet heavily (↓ ${rate(net.rxRate)}, ↑ ${rate(net.txRate)}). If things feel slow online, that's likely why.`, group: net.canQuit ? net : undefined });
     if (memUse > 0.9 && !out.length)
       out.push({ text: "Memory is almost full. Closing a few apps or browser tabs will make your computer more responsive." });
     return out;
@@ -177,6 +232,17 @@
 {#if error}<p class="error">{error}</p>{/if}
 {#if notice}<p class="ok">{notice}</p>{/if}
 
+{#snippet net(rxRate: number, txRate: number, rx: number, tx: number, conns: number)}
+  {#if snap?.net_per_process}
+    {#if rxRate >= 1 || txRate >= 1}
+      <span class="rate">↓ {rate(rxRate)} ↑ {rate(txRate)}</span>
+    {:else}<span class="muted">Idle</span>{/if}
+    {#if rx || tx}<span class="muted small block">{bytes(rx + tx)} total</span>{/if}
+  {:else if conns}
+    <span title="{conns} open connection(s)">{conns} conn.</span>
+  {:else}<span class="muted">—</span>{/if}
+{/snippet}
+
 {#if snap}
   <div class="grid three-up">
     <div class="card stat">
@@ -222,6 +288,7 @@
         <option value="impact">Impact</option>
         <option value="memory">Memory</option>
         <option value="cpu">Processor</option>
+        <option value="net">Internet</option>
         <option value="name">Name</option>
       </select>
       <label><input type="checkbox" bind:checked={showSystem} /> Show system processes ({systemCount})</label>
@@ -244,7 +311,7 @@
         {:else}
           <table class="apps">
             <thead>
-              <tr><th>Name</th><th>Impact</th><th>Memory</th><th>Processor</th><th>Internet</th><th></th></tr>
+              <tr><th>Name</th><th>Started by</th><th>Impact</th><th>Memory</th><th>Processor</th><th title="Download ↓ and upload ↑ speed now; total since it started below">Internet</th><th></th></tr>
             </thead>
             <tbody>
               {#each showAll.has(sec.kind) || filter ? sec.items : sec.items.slice(0, LIMIT) as g (g.key)}
@@ -258,29 +325,28 @@
                       </span>
                     </button>
                   </td>
+                  <td class="small" title={g.startedBy.join(", ")}>{g.startedBy[0]}{g.startedBy.length > 1 ? ` +${g.startedBy.length - 1}` : ""}</td>
                   <td><span class="badge {g.impact.toLowerCase()}">{g.impact}</span></td>
                   <td class="mem">
                     <span>{mem(g.memory)}</span>
                     <div class="bar thin"><div style:width={pct(g.memory, snap.total_memory)}></div></div>
                   </td>
                   <td><span class="lvl {cpuLevel(g.cpu).toLowerCase()}">{cpuLevel(g.cpu)}</span> <span class="muted small">{g.cpu.toFixed(1)}%</span></td>
-                  <td>
-                    {#if g.connections}
-                      <span title="{g.connections} open connection(s)">Online</span>
-                    {:else}<span class="muted">—</span>{/if}
-                  </td>
+                  <td>{@render net(g.rxRate, g.txRate, g.rx, g.tx, g.connections)}</td>
                   <td class="num">
                     {#if g.canQuit}<button onclick={() => quit(g)}>Quit</button>{/if}
                   </td>
                 </tr>
                 {#if expanded.has(g.key)}
-                  {#each g.procs as p (p.pid)}
+                  {#each g.tree as { p, depth } (p.pid)}
+                    {@const parent = p.parent == null ? undefined : byPid.get(p.parent)}
                     <tr class="sub" title={p.exe ?? ""}>
-                      <td>{p.name} <span class="muted small">#{p.pid}</span></td>
+                      <td style:padding-left="{48 + depth * 16}px">{depth ? "↳ " : ""}{p.name} <span class="muted small">#{p.pid}</span></td>
+                      <td class="muted">{depth === 0 && parent ? `${parent.name} #${parent.pid}` : ""}</td>
                       <td></td>
                       <td>{mem(p.memory)}</td>
                       <td class="muted">{p.cpu.toFixed(1)}%</td>
-                      <td class="muted">{p.connections || ""}</td>
+                      <td>{@render net(p.net_rx_rate ?? 0, p.net_tx_rate ?? 0, p.net_rx ?? 0, p.net_tx ?? 0, p.connections)}</td>
                       <td></td>
                     </tr>
                   {/each}
@@ -297,9 +363,14 @@
       </div>
     {/each}
     <p class="note">
-      Impact combines memory and processor use. Quit asks an app to close normally, like choosing Quit from its menu;
-      system processes are never offered. Exact internet usage per app isn't available without admin rights, so apps
-      with open connections show as Online; total speed is shown above.
+      Impact combines memory and processor use. "Started by" is the process that launched it; expand a row to see the
+      full parent → child chain. Quit asks an app to close normally, like choosing Quit from its menu; system processes
+      are never offered.
+      {#if snap.net_per_process}
+        Internet shows the current download ↓ and upload ↑ speed (measured every ~5 seconds) and the total since each process started.
+      {:else}
+        This system doesn't report internet usage per app without admin rights, so apps show their open connections; total speed is shown above.
+      {/if}
     </p>
   {/if}
 {:else}
@@ -318,10 +389,13 @@
   h3 { margin: 0; font-size: 15px; }
   .small { font-size: 12px; }
   .apps td { vertical-align: middle; }
-  .apps th:nth-child(2), .apps td:nth-child(2) { width: 90px; }
-  .apps th:nth-child(3), .apps td:nth-child(3) { width: 140px; }
-  .apps th:nth-child(4), .apps td:nth-child(4) { width: 140px; }
-  .apps th:nth-child(5), .apps td:nth-child(5) { width: 90px; }
+  .apps th:nth-child(2), .apps td:nth-child(2) { width: 140px; }
+  .apps th:nth-child(3), .apps td:nth-child(3) { width: 90px; }
+  .apps th:nth-child(4), .apps td:nth-child(4) { width: 130px; }
+  .apps th:nth-child(5), .apps td:nth-child(5) { width: 130px; }
+  .apps th:nth-child(6), .apps td:nth-child(6) { width: 150px; }
+  .rate { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .block { display: block; }
   .apps td:last-child { width: 80px; }
   .name { all: unset; cursor: pointer; display: flex; align-items: center; gap: 10px; }
   .name > span:last-child { display: flex; flex-direction: column; }
