@@ -144,3 +144,23 @@ export const leftoverApi = {
   find: () => invoke<Leftover[]>("find_leftovers"),
   openSystemCleanup: () => invoke<void>("open_system_cleanup"),
 };
+
+export interface Volume {
+  mount_point: string;
+  device: string;
+  label: string;
+  file_system: string;
+  total: number;
+  removable: boolean;
+  /** Why it can't be formatted; null when it can. */
+  blocked: string | null;
+  confirm_text: string;
+  file_systems: string[];
+}
+
+export const formatApi = {
+  list: () => invoke<Volume[]>("list_format_volumes"),
+  /** Permanently erases the volume. The backend re-checks everything. */
+  format: (mountPoint: string, fileSystem: string, label: string, confirm: string) =>
+    invoke<void>("format_volume", { mountPoint, fileSystem, label, confirm }),
+};

@@ -2,6 +2,7 @@ mod apps;
 mod caches;
 mod cleanup;
 mod disk;
+mod format;
 mod leftovers;
 mod processes;
 mod safety;
@@ -91,6 +92,23 @@ fn open_system_cleanup() -> Result<(), String> {
     leftovers::open_system_tool().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn list_format_volumes() -> Result<Vec<format::Volume>, String> {
+    blocking(|| Ok(format::list())).await
+}
+
+/// Erases a volume. The backend re-checks eligibility and the typed
+/// confirmation; the OS elevation prompt is always shown.
+#[tauri::command]
+async fn format_volume(
+    mount_point: String,
+    file_system: String,
+    label: String,
+    confirm: String,
+) -> Result<(), String> {
+    blocking(move || format::format(&mount_point, &file_system, &label, &confirm)).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -108,7 +126,9 @@ pub fn run() {
             cleanup_execute,
             check_path,
             find_leftovers,
-            open_system_cleanup
+            open_system_cleanup,
+            list_format_volumes,
+            format_volume
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
