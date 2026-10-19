@@ -231,7 +231,11 @@ pub fn list() -> Vec<AppInfo> {
             let id = crate::uninstall::bundle_id(p);
             AppInfo {
                 blocked: crate::uninstall::blocked(p, id.as_deref()),
-                publisher: id.as_deref().filter(|i| i.starts_with("com.apple.")).map(|_| "Apple".to_string()),
+                version: crate::uninstall::plist_value(p, "CFBundleShortVersionString"),
+                publisher: crate::uninstall::plist_value(p, "NSHumanReadableCopyright")
+                    .as_deref()
+                    .and_then(crate::uninstall::publisher_from_copyright)
+                    .or_else(|| id.as_deref().filter(|i| i.starts_with("com.apple.")).map(|_| "Apple Inc".to_string())),
                 name: p
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())

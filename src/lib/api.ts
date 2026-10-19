@@ -95,6 +95,21 @@ export interface AppInfo {
   size: number | null;
   installed: string | null;
   last_used: number | null;
+  /** Why it can't be removed from here; null when it can. */
+  blocked: string | null;
+}
+
+export interface AppLeftover {
+  path: string;
+  size: number;
+}
+
+export interface RemoveOutcome {
+  moved: string[];
+  freed: number;
+  failed: [string, string][];
+  launched: boolean;
+  command: string | null;
 }
 
 export const api = {
@@ -111,6 +126,9 @@ export const api = {
   quitProcesses: (pids: number[]) => invoke<number>("quit_processes", { pids }),
   listCaches: () => invoke<CacheInfo[]>("list_caches"),
   listApps: () => invoke<AppInfo[]>("list_apps"),
+  appLeftovers: (location: string) => invoke<AppLeftover[]>("app_leftovers", { location }),
+  /** `target`: location on macOS/Linux, display name on Windows. Never deletes permanently. */
+  removeApp: (target: string, leftovers: string[]) => invoke<RemoveOutcome>("remove_app", { target, leftovers }),
 };
 
 export type Target =

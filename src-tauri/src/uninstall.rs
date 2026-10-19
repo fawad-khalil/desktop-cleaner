@@ -3,8 +3,8 @@
 //! - Windows: the app's own registered uninstaller is launched.
 //! - Linux: the package-manager command is returned for the user to run.
 //!
-//! Apple's own apps, anything outside the Applications folders, and this
-//! app itself are refused.
+//! Apps that are part of macOS (System Integrity Protection), anything
+//! outside the Applications folders, and this app itself are refused.
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -39,9 +39,18 @@ pub fn blocked(location: &Path, bundle_id: Option<&str>) -> Option<String> {
     if parent != Path::new("/Applications") && Some(parent.to_path_buf()) != home_apps {
         return Some("only apps directly in an Applications folder can be removed".into());
     }
-    if bundle_id.is_some_and(|id| id.starts_with("com.apple.")) {
-        return Some("built into macOS".into());
+    // Safari and the like are SIP-protected links into the system volume.
+    // Apple apps from the App Store (Pages, Xcode…) are ordinary bundles.
+    use std::os::macos::fs::MetadataExt;
+    const SF_RESTRICTED: u32 = 0x0008_0000;
+    match std::fs::symlink_metadata(location) {
+        Ok(m) if m.file_type().is_symlink() || m.st_flags() & SF_RESTRICTED != 0 => {
+            return Some("built into macOS".into());
+        }
+        Ok(_) => {}
+        Err(e) => return Some(e.to_string()),
     }
+    let _ = bundle_id;
     if let Ok(exe) = std::env::current_exe() {
         if exe.starts_with(location) {
             return Some("this is DesktopCleaner itself".into());
@@ -50,15 +59,35 @@ pub fn blocked(location: &Path, bundle_id: Option<&str>) -> Option<String> {
     None
 }
 
+/// One string value from an app's Info.plist.
 #[cfg(target_os = "macos")]
-pub fn bundle_id(app: &Path) -> Option<String> {
+pub fn plist_value(app: &Path, key: &str) -> Option<String> {
     let out = std::process::Command::new("/usr/bin/plutil")
-        .args(["-extract", "CFBundleIdentifier", "raw", "-o", "-"])
+        .args(["-extract", key, "raw", "-o", "-"])
         .arg(app.join("Contents/Info.plist"))
         .output()
         .ok()?;
-    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !id.is_empty()).then_some(id)
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !v.is_empty()).then_some(v)
+}
+
+#[cfg(target_os = "macos")]
+pub fn bundle_id(app: &Path) -> Option<String> {
+    plist_value(app, "CFBundleIdentifier")
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// "© 2005–2024 Apple Inc. All rights reserved." → "Apple Inc."
+pub fn publisher_from_copyright(c: &str) -> Option<String> {
+    let mut s = c.trim();
+    for p in ["Copyright", "copyright", "(c)", "(C)", "©"] {
+        s = s.trim_start_matches(p).trim_start();
+    }
+    let s = s.trim_start_matches(|ch: char| ch.is_ascii_digit() || "-–, ".contains(ch)).trim_start_matches('©').trim();
+    let lower = s.to_ascii_lowercase();
+    let end = ["all rights", ", a ", ". licensed"].iter().filter_map(|m| lower.find(m)).min().unwrap_or(s.len());
+    let name = s[..end].trim().trim_end_matches([',', '.']).trim();
+    (!name.is_empty() && name.len() <= 60).then(|| name.to_string())
 }
 
 /// Per-user support files an app usually leaves behind, found by bundle id
@@ -183,16 +212,32 @@ pub fn remove(location: &str, _extra: &[String]) -> anyhow::Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn publisher_from_copyright_lines() {
+        use super::publisher_from_copyright as p;
+        assert_eq!(p("© 2005–2024 Apple Inc. All rights reserved.").as_deref(), Some("Apple Inc"));
+        assert_eq!(p("©2025 Slack Technologies LLC, a Salesforce company. All rights reserved.").as_deref(), Some("Slack Technologies LLC"));
+        assert_eq!(p("Copyright 2019 Foo GmbH").as_deref(), Some("Foo GmbH"));
+        assert_eq!(p("Copyright © 2024 Docker Inc.All Rights Reserved").as_deref(), Some("Docker Inc"));
+        assert_eq!(p("©").as_deref(), None);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn refuses_apple_and_odd_locations() {
         use super::*;
         let safari = Path::new("/Applications/Safari.app");
-        assert!(blocked(safari, Some("com.apple.Safari")).is_some());
+        if safari.exists() {
+            assert_eq!(blocked(safari, None).as_deref(), Some("built into macOS"));
+        }
         assert!(blocked(Path::new("/System/Applications/Notes.app"), None).is_some());
         assert!(blocked(Path::new("/Applications/Sub/Thing.app"), None).is_some());
         assert!(blocked(Path::new("/Applications/Thing"), None).is_some());
-        assert!(blocked(Path::new("/Applications/Thing.app"), Some("com.example.thing")).is_none());
+        // App Store apps from Apple are ordinary bundles and removable.
+        let pages = Path::new("/Applications/Pages.app");
+        if pages.exists() {
+            assert_eq!(blocked(pages, None), None);
+        }
         // remove() re-checks and refuses without touching anything.
         assert!(remove("/Applications/Safari.app", &[]).is_err());
         assert!(safari.exists());
