@@ -3,13 +3,14 @@ mod caches;
 mod cleanup;
 mod disk;
 mod format;
+mod index;
 mod leftovers;
 mod processes;
 mod safety;
 mod uninstall;
 
 use processes::ProcState;
-use tauri::State;
+use tauri::{Manager, State};
 
 /// Runs blocking work off the main thread and flattens errors to strings
 /// for the frontend.
@@ -31,7 +32,14 @@ async fn list_drives() -> Result<Vec<disk::DriveInfo>, String> {
 
 #[tauri::command]
 async fn scan_dir(path: String, fresh: Option<bool>) -> Result<disk::ScanResult, String> {
-    blocking(move || disk::scan(&path, fresh.unwrap_or(false))).await
+    blocking(move || index::scan(&path, fresh.unwrap_or(false))).await
+}
+
+/// Brings the saved index containing `path` up to date (FSEvents history on
+/// macOS, folder times elsewhere, a full rescan weekly) and returns `path`.
+#[tauri::command]
+async fn refresh_index(path: String) -> Result<index::Refreshed, String> {
+    blocking(move || index::refresh_index(&path)).await
 }
 
 #[tauri::command]
@@ -153,10 +161,18 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(ProcState::new())
+        .setup(|app| {
+            let store = app.path().app_local_data_dir().ok().map(|d| d.join("index"));
+            if let Some(dir) = &store {
+                index::set_store_dir(dir.clone());
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_drives,
             scan_dir,
             scan_progress,
+            refresh_index,
             open_full_disk_access,
             largest_files,
             list_processes,
