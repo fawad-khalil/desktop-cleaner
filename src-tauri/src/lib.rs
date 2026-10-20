@@ -7,6 +7,7 @@ mod index;
 mod leftovers;
 mod processes;
 mod safety;
+mod stats;
 mod uninstall;
 mod watch;
 
@@ -105,7 +106,12 @@ async fn app_leftovers(location: String) -> Result<Vec<uninstall::Leftover>, Str
 /// the app's location (macOS, Linux) or display name (Windows).
 #[tauri::command]
 async fn remove_app(target: String, leftovers: Vec<String>) -> Result<uninstall::Outcome, String> {
-    blocking(move || uninstall::remove(&target, &leftovers)).await
+    blocking(move || {
+        let r = uninstall::remove(&target, &leftovers)?;
+        stats::record("app", r.freed, r.moved.len() as u64);
+        Ok(r)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -116,7 +122,18 @@ async fn cleanup_preview(targets: Vec<cleanup::Target>) -> Result<cleanup::Previ
 /// Moves items to the Recycle Bin / Trash. Each path is re-validated.
 #[tauri::command]
 async fn cleanup_execute(paths: Vec<String>) -> Result<cleanup::CleanResult, String> {
-    blocking(move || Ok(cleanup::execute(paths))).await
+    blocking(move || {
+        let r = cleanup::execute(paths);
+        stats::record("cleanup", r.freed, r.moved as u64);
+        Ok(r)
+    })
+    .await
+}
+
+/// Space freed this session and all time, with recent cleanups.
+#[tauri::command]
+fn cleaning_stats() -> stats::Summary {
+    stats::summary()
 }
 
 #[tauri::command]
@@ -167,6 +184,9 @@ pub fn run() {
             if let Some(dir) = &store {
                 index::set_store_dir(dir.clone());
             }
+            if let Ok(dir) = app.path().app_local_data_dir() {
+                stats::set_file(dir.join("cleaning-stats.json"));
+            }
             let handle = app.handle().clone();
             watch::start(move |root| {
                 let _ = handle.emit("index-changed", root.to_string());
@@ -188,6 +208,7 @@ pub fn run() {
             remove_app,
             cleanup_preview,
             cleanup_execute,
+            cleaning_stats,
             check_path,
             find_leftovers,
             open_system_cleanup,

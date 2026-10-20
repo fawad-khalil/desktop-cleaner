@@ -4,17 +4,23 @@
 //! Not used on Linux, where watching a whole drive with inotify would need
 //! a watch per folder; there the index is refreshed on start and on request.
 
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 use std::time::{Duration, Instant};
 
 /// Quiet time before a batch of changes is applied, the longest a change
 /// waits while events keep coming, and the minimum gap between batches for
 /// one root. Busy folders (browser caches) change constantly and rereading
 /// them isn't free, so batches are kept infrequent.
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 const SETTLE: Duration = Duration::from_secs(5);
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 const MAX_WAIT: Duration = Duration::from_secs(60);
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 const MIN_GAP: Duration = Duration::from_secs(30);
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 const SAVE_EVERY: Duration = Duration::from_secs(60);
 
 #[cfg(not(all(unix, not(target_os = "macos"))))]
