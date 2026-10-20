@@ -7,6 +7,8 @@ Rust + Tauri v2 and a SvelteKit (TypeScript) frontend.
 
 - **Disk**: a storage bar per drive (used space by file type, then free) and a two-ring chart of used space
   to click down through folders to single files; breakdowns by file type and last-used age; largest files per slice.
+  The scan is saved and shown instantly next time, then brought up to date incrementally (FSEvents history on
+  macOS, changed-folder detection elsewhere, a full rescan weekly) and kept live while the app is open.
 - **Cleanup**: caches, old files (by last use and size) and update leftovers; dry-run preview,
   then move the selection to the Recycle Bin / Trash.
 - **What's running**: apps and background tasks grouped by app, with impact, memory, processor, who started

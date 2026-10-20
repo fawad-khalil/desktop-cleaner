@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { api, type DriveInfo, type Entry, type FileItem, type ScanResult } from "../api";
-  import { ago, bytes, freeColor, pct, systemColor, typeColors } from "../format";
+  import { listen } from "@tauri-apps/api/event";
+  import { api, type DriveInfo, type Entry, type FileItem, type Refreshed, type ScanResult } from "../api";
+  import { ago, bytes, freeColor, pct, since, systemColor, typeColors } from "../format";
   import Pie, { type Slice } from "../Pie.svelte";
   import StorageBar, { type Segment } from "../StorageBar.svelte";
   import Sunburst from "../Sunburst.svelte";
@@ -15,6 +16,11 @@
   let scanning = $state("");
   let progress = $state(0);
   let autoStarted = false;
+  /** Root of the index being brought up to date in the background. */
+  let refreshing = $state("");
+  let lastMethod = $state<Refreshed["method"] | null>(null);
+  /** Ticks so "Updated … ago" stays current. */
+  let clock = $state(Date.now());
 
   let filesTitle = $state("");
   let files = $state<FileItem[] | null>(null);
@@ -35,7 +41,40 @@
   });
 
   $effect(() => {
-    if (!scanning) return;
+    const id = setInterval(() => (clock = Date.now()), 30_000);
+    // The live watcher changed an index: re-show what's on screen (from memory).
+    const un = listen<string>("index-changed", (e) => reload(e.payload));
+    return () => {
+      clearInterval(id);
+      un.then((f) => f());
+    };
+  });
+
+  /** Re-reads the current view and drive bars for `root` from the index. */
+  async function reload(root: string) {
+    try {
+      if (drives.some((d) => d.mount_point === root)) driveScans[root] = await api.scanDir(root);
+      if (scan && scan.root === root && !scanning) scan = await api.scanDir(scan.path);
+    } catch {}
+  }
+
+  /** Updates the saved index in the background, then re-shows the view. */
+  async function refreshIndex(root: string) {
+    if (refreshing) return;
+    refreshing = root;
+    try {
+      const r = await api.refreshIndex(root);
+      lastMethod = r.method;
+      await reload(root);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      refreshing = "";
+    }
+  }
+
+  $effect(() => {
+    if (!scanning && !refreshing) return;
     const id = setInterval(() => api.scanProgress().then((n) => (progress = n)).catch(() => {}), 500);
     return () => clearInterval(id);
   });
@@ -50,6 +89,8 @@
       const res = await api.scanDir(path, fresh);
       if (drives.some((d) => d.mount_point === res.path)) driveScans[res.path] = res;
       scan = res;
+      // Shown from the saved index: bring it up to date in the background.
+      if (!fresh && Date.now() / 1000 - res.updated_at > 60) refreshIndex(res.root);
     } catch (e) {
       error = String(e);
     } finally {
@@ -96,6 +137,8 @@
     segs.push(free);
     return segs;
   }
+
+  const methodText = { events: "from the system's change history", mtime: "by checking which folders changed", full: "by a full rescan" };
 
   const hiddenHint = isMac
     ? "macOS system data, swap, snapshots and folders DesktopCleaner isn't allowed to read"
@@ -160,6 +203,7 @@
           <span class="muted">Scanning… {progress.toLocaleString()} files so far</span>
         {:else if s}
           <button onclick={() => open(d.mount_point)} disabled={!!scanning}>Explore</button>
+          <span class="muted small">{refreshing === d.mount_point ? "Updating…" : `Updated ${since(s.updated_at, clock)}`}</span>
         {:else}
           <button class="primary" disabled={!!scanning} onclick={() => open(d.mount_point)}>Analyze</button>
           <span class="muted">to break down used space</span>
@@ -185,7 +229,13 @@
     </div>
     <span class="grow"></span>
     <span class="muted">{bytes(scan.total)} in {scan.files.toLocaleString()} files</span>
-    <button onclick={() => open(scan!.path, true)} disabled={!!scanning} title="Read this folder from disk again">Rescan</button>
+    <span class="muted" title={`Last full scan ${since(scan.full_scan_at, clock)}${lastMethod ? `; last update ${methodText[lastMethod]}` : ""}`}>
+      {#if refreshing === scan.root}Updating… {progress ? `(${progress.toLocaleString()} files checked)` : ""}{:else}Updated {since(scan.updated_at, clock)}{/if}
+    </span>
+    {#if scan.path !== scan.root}
+      <button onclick={() => open(scan!.path, true)} disabled={!!scanning || !!refreshing} title="Read just this folder from disk again">Rescan folder</button>
+    {/if}
+    <button onclick={() => open(scan!.root, true)} disabled={!!scanning || !!refreshing} title="Read the whole drive again from scratch">Full rescan</button>
   </div>
 
   {#if isMac && scan.skipped && driveFor(scan.path)}
@@ -279,4 +329,5 @@
   .grow { flex: 1; }
   h3 { margin: 0 0 12px; font-size: 14px; color: var(--muted); font-weight: 600; }
   .hint { border-left: 4px solid var(--warn); font-size: 13px; }
+  .small { font-size: 12px; }
 </style>

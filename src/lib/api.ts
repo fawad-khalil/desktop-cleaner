@@ -34,6 +34,17 @@ export interface ScanResult {
   types: TypeBucket[];
   ages: TypeBucket[];
   skipped: number;
+  /** Folder the saved index was scanned from (e.g. the drive). */
+  root: string;
+  /** When the index was last brought up to date / fully rescanned (epoch seconds). */
+  updated_at: number;
+  full_scan_at: number;
+}
+
+export interface Refreshed {
+  result: ScanResult;
+  /** events: replayed change history; mtime: compared folder times; full: rescanned everything. */
+  method: "events" | "mtime" | "full";
 }
 
 export interface FileItem {
@@ -116,6 +127,8 @@ export const api = {
   listDrives: () => invoke<DriveInfo[]>("list_drives"),
   /** Folders inside the last scan are answered from memory unless `fresh`. */
   scanDir: (path: string, fresh = false) => invoke<ScanResult>("scan_dir", { path, fresh }),
+  /** Brings the saved index containing `path` up to date and returns `path`. */
+  refreshIndex: (path: string) => invoke<Refreshed>("refresh_index", { path }),
   /** Files counted so far by the scan in progress. */
   scanProgress: () => invoke<number>("scan_progress"),
   openFullDiskAccess: () => invoke<void>("open_full_disk_access"),

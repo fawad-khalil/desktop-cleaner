@@ -32,6 +32,17 @@ export function ago(epochSecs: number | null | undefined): string {
   return `${(days / 365).toFixed(1)} years ago`;
 }
 
+/** "just now", "5 min ago", "3 h ago", "2 days ago". */
+export function since(epochSecs: number | null | undefined, nowMs = Date.now()): string {
+  if (!epochSecs) return "never";
+  const s = Math.max(0, Math.floor(nowMs / 1000 - epochSecs));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  const d = Math.floor(s / 86400);
+  return d === 1 ? "yesterday" : `${d} days ago`;
+}
+
 export function daysSince(epochSecs: number | null | undefined): number | null {
   if (!epochSecs) return null;
   return Math.floor((Date.now() / 1000 - epochSecs) / 86400);
