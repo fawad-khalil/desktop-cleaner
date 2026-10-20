@@ -40,6 +40,55 @@
     return s;
   }
 
+  /** Sets an `indeterminate` checkbox state (no attribute exists for it). */
+  function indeterminate(node: HTMLInputElement, on: boolean) {
+    node.indeterminate = on;
+    return { update: (v: boolean) => (node.indeterminate = v) };
+  }
+
+  const isTemp = (c: CacheInfo) => c.group === "System temp" || c.group === "Logs";
+  const sections = $derived([
+    { title: "Caches", blurb: "Browser, app and developer-tool caches. Apps rebuild them when needed.", items: (caches ?? []).filter((c) => !isTemp(c)) },
+    { title: "Temporary files & logs", blurb: "Temp folders, crash reports and logs that are safe to clear.", items: (caches ?? []).filter(isTemp) },
+  ]);
+
+  type TriState = "all" | "some" | "none";
+  function groupState(items: CacheInfo[]): TriState {
+    const n = items.filter((c) => picked.has(c.path)).length;
+    return n === 0 ? "none" : n === items.length ? "all" : "some";
+  }
+  const allState = $derived.by((): TriState => {
+    const items = caches ?? [];
+    const n = items.filter((c) => picked.has(c.path)).length + (oldEnabled ? 1 : 0);
+    return n === 0 ? "none" : n === items.length + 1 ? "all" : "some";
+  });
+
+  function setPaths(paths: string[], on: boolean) {
+    const s = new Set(picked);
+    for (const p of paths) on ? s.add(p) : s.delete(p);
+    picked = s;
+  }
+  function selectAll(on: boolean) {
+    setPaths((caches ?? []).map((c) => c.path), on);
+    oldEnabled = on;
+  }
+
+  const anySelected = $derived(picked.size > 0 || pickedLeftovers.size > 0 || (oldEnabled && !!oldPath));
+  const selectionSummary = $derived.by(() => {
+    const parts: string[] = [];
+    const sel = (caches ?? []).filter((c) => picked.has(c.path));
+    if (sel.length) parts.push(`${sel.length} cache/temp location${sel.length > 1 ? "s" : ""} (up to ${bytes(sel.reduce((a, c) => a + c.size, 0))})`);
+    if (oldEnabled && oldPath) parts.push("old files");
+    if (pickedLeftovers.size) parts.push(`${pickedLeftovers.size} leftover item(s)`);
+    return parts.join(" + ");
+  });
+
+  const trashName = navigator.userAgent.includes("Windows") ? "Recycle Bin" : "Trash";
+  let previewEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    if (preview && previewEl) previewEl.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
   function togglePaths(paths: string[], on: boolean) {
     const s = new Set(pickedLeftovers);
     for (const p of paths) on ? s.add(p) : s.delete(p);
@@ -94,11 +143,11 @@
     const paths = [...selected];
     if (!paths.length) return;
     const ok = await ask(
-      `Move ${paths.length} item(s), ${bytes(selectedSize)}, to the Recycle Bin / Trash?\n\nYou can restore them from there until it is emptied.`,
-      { title: "Confirm cleanup", kind: "warning", okLabel: "Move to Recycle Bin", cancelLabel: "Cancel" },
+      `Move ${paths.length} item(s), ${bytes(selectedSize)}, to the ${trashName}?\n\nYou can restore them from there until it is emptied.`,
+      { title: "Confirm cleanup", kind: "warning", okLabel: `Move to ${trashName}`, cancelLabel: "Cancel" },
     );
     if (!ok) return;
-    busy = "Moving items to the Recycle Bin…";
+    busy = `Moving items to the ${trashName}…`;
     try {
       result = await cleanupApi.execute(paths);
       preview = null;
@@ -117,7 +166,8 @@
 <header>
   <h1>Cleanup</h1>
   <p class="muted">
-    Pick what to clean, preview exactly what would go, then move your selection to the Recycle Bin / Trash.
+    Tick what you'd like to clean, choose Show selected to see exactly which files that covers, then move the ones
+    you pick to the {trashName}.
     System files are always excluded.
   </p>
 </header>
@@ -125,7 +175,7 @@
 
 {#if result}
   <div class="card rec">
-    <strong>Moved {result.moved} item(s) to the Recycle Bin, freeing {bytes(result.freed)}.</strong>
+    <strong>Moved {result.moved} item(s) to the {trashName}, freeing {bytes(result.freed)}.</strong>
     {#if result.failed.length}
       <p class="muted">{result.failed.length} item(s) could not be moved (often because they are in use):</p>
       <ul class="small">
@@ -135,49 +185,70 @@
   </div>
 {/if}
 
-<div class="grid two">
-  <div class="card">
-    <h3>Caches &amp; temp</h3>
-    <div class="toolbar">
-      <span class="muted">Not used for</span>
-      <select bind:value={cacheAge}>
-        <option value={0}>any time (clean everything)</option>
-        <option value={7}>7 days</option>
-        <option value={30}>30 days</option>
-        <option value={90}>3 months</option>
-        <option value={180}>6 months</option>
-        <option value={365}>1 year</option>
-      </select>
-    </div>
-    {#if caches}
-      {#each caches as c}
-        <label class="check">
-          <input type="checkbox" checked={picked.has(c.path)} onchange={() => (picked = toggle(picked, c.path))} />
-          <span class="grow">{c.name}</span>
-          <span class="muted">{bytes(c.size)}</span>
-        </label>
-      {/each}
-    {:else}
-      <p class="muted">Measuring caches…</p>
-    {/if}
-    {#if cacheAge}
-      <p class="note">Only items in the ticked caches that nothing has used for {cacheAge} days or more are included; sizes above are the whole cache. The preview shows exactly what qualifies.</p>
-    {/if}
+<div class="card">
+  <div class="row head">
+    <label class="check master">
+      <input type="checkbox" checked={allState === "all"} use:indeterminate={allState === "some"}
+        onchange={(e) => selectAll(e.currentTarget.checked)} disabled={!caches} />
+      <h3>Caches, temporary files &amp; old files</h3>
+    </label>
+    <span class="muted">Tick what you'd like to clean up, then choose <strong>Show selected</strong> to review the exact files.</span>
   </div>
 
-  <div class="card">
-    <h3>Old files</h3>
-    <label class="check">
+  <div class="toolbar">
+    <span class="muted">Only include cache and temporary items not used for</span>
+    <select bind:value={cacheAge}>
+      <option value={0}>any time (everything)</option>
+      <option value={7}>7 days</option>
+      <option value={30}>30 days</option>
+      <option value={90}>3 months</option>
+      <option value={180}>6 months</option>
+      <option value={365}>1 year</option>
+    </select>
+  </div>
+
+  {#if !caches}
+    <p class="muted">Measuring caches…</p>
+  {:else}
+    {#each sections as sec}
+      {#if sec.items.length}
+        {@const st = groupState(sec.items)}
+        <div class="sub">
+          <label class="check subhead">
+            <input type="checkbox" checked={st === "all"} use:indeterminate={st === "some"}
+              onchange={(e) => setPaths(sec.items.map((c) => c.path), e.currentTarget.checked)} />
+            <strong class="grow">{sec.title}</strong>
+            <span class="muted">{bytes(sec.items.reduce((a, c) => a + c.size, 0))}</span>
+          </label>
+          <p class="muted blurb">{sec.blurb}</p>
+          {#each sec.items as c}
+            <label class="check item">
+              <input type="checkbox" checked={picked.has(c.path)} onchange={() => (picked = toggle(picked, c.path))} />
+              <span class="grow" title={c.path}>{c.name}</span>
+              <span class="muted">{bytes(c.size)}</span>
+            </label>
+          {/each}
+        </div>
+      {/if}
+    {/each}
+    {#if cacheAge}
+      <p class="note">Sizes are the whole folder; only the items nothing has used for {cacheAge} days or more will be listed when you choose Show selected.</p>
+    {/if}
+  {/if}
+
+  <div class="sub">
+    <label class="check subhead">
       <input type="checkbox" bind:checked={oldEnabled} />
-      <span>Find files not used recently</span>
+      <strong class="grow">Old files</strong>
     </label>
-    <div class="toolbar">
-      <input class="grow" bind:value={oldPath} placeholder="Folder to search" />
+    <p class="muted blurb">Files in a folder of your choice that you haven't opened or changed in a long time.</p>
+    <div class="toolbar item">
+      <input class="grow" bind:value={oldPath} placeholder="Folder to search" onfocus={() => (oldEnabled = true)} />
       <button onclick={browse}>Browse…</button>
     </div>
-    <div class="toolbar">
+    <div class="toolbar item">
       <span class="muted">Not used for</span>
-      <select bind:value={minAge}>
+      <select bind:value={minAge} onchange={() => (oldEnabled = true)}>
         <option value={30}>30 days</option>
         <option value={90}>3 months</option>
         <option value={180}>6 months</option>
@@ -185,7 +256,7 @@
         <option value={730}>2 years</option>
       </select>
       <span class="muted">and at least</span>
-      <select bind:value={minSize}>
+      <select bind:value={minSize} onchange={() => (oldEnabled = true)}>
         <option value={0}>any size</option>
         <option value={1024 * 1024}>1 MB</option>
         <option value={10 * 1024 * 1024}>10 MB</option>
@@ -193,7 +264,14 @@
         <option value={1024 * 1024 * 1024}>1 GB</option>
       </select>
     </div>
-    <p class="note">"Used" means the later of last access and last modification.</p>
+    <p class="note item">"Used" means the later of last opened and last changed.</p>
+  </div>
+
+  <div class="toolbar actions">
+    <button class="primary" onclick={runPreview} disabled={!!busy || !anySelected}>Show selected</button>
+    <span class="muted">
+      {#if busy}{busy}{:else if anySelected}{selectionSummary}. Nothing is deleted yet; you'll review the files first.{:else}Nothing selected yet.{/if}
+    </span>
   </div>
 </div>
 
@@ -236,15 +314,16 @@
   {/if}
 </div>
 
-<div class="toolbar">
-  <button class="primary" onclick={runPreview} disabled={!!busy || (!picked.size && !pickedLeftovers.size && !oldEnabled)}>
-    Preview (dry run)
-  </button>
-  {#if busy}<span class="muted">{busy}</span>{/if}
-</div>
+{#if pickedLeftovers.size}
+  <div class="toolbar">
+    <button class="primary" onclick={runPreview} disabled={!!busy}>Show selected</button>
+    <span class="muted">{pickedLeftovers.size} leftover item(s) ticked{picked.size || oldEnabled ? ", plus your choices above" : ""}.</span>
+  </div>
+{/if}
 
 {#if preview}
-  <div class="card">
+  <div class="card" bind:this={previewEl}>
+    <h3>Review: these will be moved to the {trashName}</h3>
     <div class="toolbar">
       <strong>{preview.items.length} items · {bytes(preview.total)}</strong>
       {#if preview.truncated}<span class="muted">(showing the largest {preview.items.length})</span>{/if}
@@ -252,7 +331,7 @@
       <button onclick={() => (selected = new Set())}>Select none</button>
       <span class="grow"></span>
       <button class="danger" disabled={!selected.size || !!busy} onclick={clean}>
-        Move {selected.size} selected ({bytes(selectedSize)}) to Recycle Bin
+        Move {selected.size} selected ({bytes(selectedSize)}) to {trashName}
       </button>
     </div>
     {#if preview.protected_count}
@@ -286,6 +365,13 @@
 <style>
   h3 { margin: 0 0 10px; font-size: 14px; }
   .check { display: flex; gap: 8px; align-items: center; padding: 4px 0; cursor: pointer; }
+  .head { align-items: center; flex-wrap: wrap; }
+  .master h3 { margin: 0; }
+  .sub { border-top: 1px solid var(--border); padding: 10px 0 6px; }
+  .subhead { padding: 2px 0; }
+  .blurb { margin: 0 0 4px 26px; font-size: 12px; }
+  .item { margin-left: 26px; }
+  .actions { margin: 12px 0 0; border-top: 1px solid var(--border); padding-top: 12px; }
   .grow { flex: 1; }
   .small { font-size: 12px; margin: 6px 0; padding-left: 18px; }
   .badge { font-size: 11px; font-weight: 600; color: #fff; background: var(--warn); border-radius: 6px; padding: 2px 6px; margin-left: 6px; }

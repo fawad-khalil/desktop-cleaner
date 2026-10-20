@@ -9,8 +9,9 @@ Rust + Tauri v2 and a SvelteKit (TypeScript) frontend.
   to click down through folders to single files; breakdowns by file type and last-used age; largest files per slice.
   The scan is saved and shown instantly next time, then brought up to date incrementally (FSEvents history on
   macOS, changed-folder detection elsewhere, a full rescan weekly) and kept live while the app is open.
-- **Cleanup**: caches, old files (by last use and size) and update leftovers; dry-run preview,
-  then move the selection to the Recycle Bin / Trash.
+- **Cleanup**: one card for caches, temporary files and old files (by last use and size) with Select all,
+  plus update leftovers; "Show selected" lists exactly what that covers, then the chosen items go to the
+  Recycle Bin / Trash.
 - **What's running**: apps and background tasks grouped by app, with impact, memory, processor, who started
   them, internet speed per app (macOS) and a confirmed Quit; an Advanced view keeps the raw process tree.
 - **Caches**: sizes of browser, developer-tool, app and OS caches.
