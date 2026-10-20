@@ -8,9 +8,10 @@ mod leftovers;
 mod processes;
 mod safety;
 mod uninstall;
+mod watch;
 
 use processes::ProcState;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 /// Runs blocking work off the main thread and flattens errors to strings
 /// for the frontend.
@@ -166,6 +167,10 @@ pub fn run() {
             if let Some(dir) = &store {
                 index::set_store_dir(dir.clone());
             }
+            let handle = app.handle().clone();
+            watch::start(move |root| {
+                let _ = handle.emit("index-changed", root.to_string());
+            }, store);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
