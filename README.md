@@ -82,23 +82,24 @@ With `"targets": "all"`, Tauri's defaults are `bundle/msi` and `bundle/nsis` on 
 
 ### Releases (GitHub Actions)
 
-- `.github/workflows/ci.yml` runs `npm run check`, `npm run build` and `cargo test` on macOS, Windows and
-  Ubuntu for every push to `main` and every pull request.
-- `.github/workflows/release.yml` builds the installers (macOS universal `.app`/`.dmg`; Windows `.msi` and
-  NSIS `.exe`; Linux `.deb`, `.rpm` and `.AppImage`) and attaches them to a **draft** GitHub Release.
-  It runs when a tag like `v0.1.0` is pushed, or by hand from the Actions tab. Keep the version the same in
-  `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then:
-  ```bash
-  git tag v0.1.0
-  git push origin v0.1.0
-  ```
-  Review the draft release on GitHub and publish it.
+`.github/workflows/ci.yml` is the whole pipeline:
+
+- **Every push to `main`, pull request and manual run**: `npm run check`, `npm run build` and `cargo test`
+  on macOS, Windows and Ubuntu.
+- **Pull requests**: once the tests pass, the installers are built and uploaded as workflow artifacts
+  (on the run's summary page) so you can try them before merging.
+- **Releases are automatic**: when tests pass on a push to `main` and there's no tag yet for the version in
+  `src-tauri/tauri.conf.json`, the pipeline builds the installers (macOS universal `.dmg`/`.app`;
+  Windows `.msi` and NSIS `.exe`; Linux `.deb`, `.rpm` and `.AppImage`) and publishes a GitHub Release
+  `vX.Y.Z` with them attached and generated release notes, which creates the tag on that commit. If the tag
+  already exists, the release is skipped. To release: bump the version in `tauri.conf.json`,
+  `package.json` and `src-tauri/Cargo.toml`, open a PR, merge it.
 - **Signing**: builds are unsigned by default, so macOS Gatekeeper ("can't be opened…") and Windows
-  SmartScreen warn on first launch. To sign, add these repository secrets and uncomment them in
-  `release.yml`: `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
-  and for notarization `APPLE_ID`, `APPLE_PASSWORD` (app-specific password), `APPLE_TEAM_ID`. For Windows,
-  configure `bundle.windows.certificateThumbprint` or `bundle.windows.signCommand` in `tauri.conf.json`
-  and import the certificate in a step before the build.
+  SmartScreen warn on first launch. To sign, add these repository secrets and uncomment them in `ci.yml`:
+  `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and for
+  notarization `APPLE_ID`, `APPLE_PASSWORD` (app-specific password), `APPLE_TEAM_ID`. For Windows, configure
+  `bundle.windows.certificateThumbprint` or `bundle.windows.signCommand` in `tauri.conf.json` and import the
+  certificate in a step before the build.
 
 ### Permissions
 
