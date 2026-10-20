@@ -1,14 +1,28 @@
 name: CI
 
+# One pipeline:
+# - every push to main, pull request and manual run: type-check, build and
+#   test on macOS, Windows and Linux;
+# - pull requests (and manual runs that don't release): also build the
+#   installers and upload them as workflow artifacts to try before merging;
+# - pushes to main where all tests pass and there's no tag yet for the
+#   version in src-tauri/tauri.conf.json: build the installers and publish a
+#   GitHub Release vX.Y.Z with them attached and generated notes, which
+#   creates the tag on that commit. Bumping the version is what releases.
+
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
+  # Runs on main (and so releases) never overlap; superseded PR runs are cancelled.
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -51,3 +65,172 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test
+
+  plan:
+    name: Plan release
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      # release: publish vX.Y.Z | artifacts: installers as workflow artifacts | none
+      mode: ${{ steps.plan.outputs.mode }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          tag="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          exists=false
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then exists=true; fi
+          if [ "$EVENT" = "pull_request" ]; then
+            mode=artifacts
+          elif [ "$REF" = "refs/heads/main" ] && [ "$exists" = false ]; then
+            mode=release
+          elif [ "$EVENT" = "workflow_dispatch" ]; then
+            mode=artifacts
+          else
+            mode=none
+            echo "::notice::$tag is already released; bump the version in tauri.conf.json, package.json and Cargo.toml to release again."
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Mode: $mode ($tag, tag exists: $exists)"
+
+  create-release:
+    name: Create release
+    needs: plan
+    if: needs.plan.outputs.mode == 'release'
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.create.outputs.result }}
+    steps:
+      # A draft until every installer is attached; the publish job releases it.
+      - id: create
+        uses: actions/github-script@v7
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        with:
+          script: |
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: process.env.TAG,
+              target_commitish: context.sha,
+              name: `DesktopCleaner ${process.env.TAG}`,
+              draft: true,
+              generate_release_notes: true,
+            });
+            return data.id;
+
+  package:
+    name: Package (${{ matrix.name }})
+    needs: [plan, create-release]
+    if: >-
+      always() && needs.plan.result == 'success' &&
+      (needs.plan.outputs.mode == 'artifacts' ||
+       (needs.plan.outputs.mode == 'release' && needs.create-release.result == 'success'))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (universal)
+            os: macos-latest
+            args: --target universal-apple-darwin
+          - name: Windows
+            os: windows-latest
+            args: --bundles msi,nsis
+          - name: Linux
+            os: ubuntu-22.04
+            args: --bundles deb,appimage,rpm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev rpm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both Mac architectures, for the universal build.
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and attach to the release
+        if: needs.plan.outputs.mode == 'release'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # --- Optional code signing (see README "Releases") ---------------
+          # Without these, macOS shows a Gatekeeper warning and Windows a
+          # SmartScreen warning on first launch. Add the secrets in the repo
+          # settings and uncomment.
+          #
+          # macOS signing + notarization:
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          #
+          # Windows: Tauri signs with a certificate configured in
+          # tauri.conf.json (bundle.windows.certificateThumbprint or
+          # bundle.windows.signCommand); import it in an earlier step.
+        with:
+          releaseId: ${{ needs.create-release.outputs.id }}
+          args: ${{ matrix.args }}
+
+      - name: Build installers
+        if: needs.plan.outputs.mode == 'artifacts'
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      - name: Upload installers
+        if: needs.plan.outputs.mode == 'artifacts'
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopCleaner-${{ runner.os }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/**/release/bundle/dmg/*.dmg
+            src-tauri/target/**/release/bundle/msi/*.msi
+            src-tauri/target/**/release/bundle/nsis/*.exe
+            src-tauri/target/**/release/bundle/deb/*.deb
+            src-tauri/target/**/release/bundle/rpm/*.rpm
+            src-tauri/target/**/release/bundle/appimage/*.AppImage
+
+  publish:
+    name: Publish release
+    needs: [plan, create-release, package]
+    if: needs.plan.outputs.mode == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish (creates the tag on this commit)
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.id }}
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: Number(process.env.RELEASE_ID),
+              draft: false,
+            });
