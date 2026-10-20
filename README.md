@@ -5,12 +5,15 @@ Rust + Tauri v2 and a SvelteKit (TypeScript) frontend.
 
 ## Screens
 
-- **Disk**: drive usage pies; drill down by folder, file type and last-used age; largest files per slice.
+- **Disk**: a storage bar per drive (used space by file type, then free) and a two-ring chart of used space
+  to click down through folders to single files; breakdowns by file type and last-used age; largest files per slice.
 - **Cleanup**: caches, old files (by last use and size) and update leftovers; dry-run preview,
   then move the selection to the Recycle Bin / Trash.
-- **Processes**: live CPU / RAM / disk I/O, grouped by parent or by app, network connections and throughput.
+- **What's running**: apps and background tasks grouped by app, with impact, memory, processor, who started
+  them, internet speed per app (macOS) and a confirmed Quit; an Advanced view keeps the raw process tree.
 - **Caches**: sizes of browser, developer-tool, app and OS caches.
-- **Apps**: installed apps with size and last-used date.
+- **Apps**: installed apps with size and last-used date, multi-column sorting, and Remove (to the Trash on
+  macOS, the app's uninstaller on Windows, the package-manager command on Linux).
 - **Recommendations**: rule-based suggestions linking to the tab that acts on them.
 - **Drives**: volumes; format non-system drives (Windows and Linux).
 
@@ -21,11 +24,64 @@ Rust + Tauri v2 and a SvelteKit (TypeScript) frontend.
 - OS-owned leftovers (Windows.old, old kernels) go through the OS's own tool, or through a command the user runs themselves.
 - Formatting refuses system, boot and page-file volumes and Linux system mounts. It requires typing `FORMAT <drive>` and always shows the OS elevation prompt.
 
-## Development
+## Building from source
+
+### Prerequisites
+
+- **Rust** via [rustup](https://rustup.rs). The repo's `.tool-versions` pins Rust 1.99.1 for asdf/mise users;
+  any recent stable toolchain that supports edition 2024 should work.
+- **Node.js 22 LTS and npm 10** (tested with Node 22.15.1 and npm 10.9.2; Vite 8 needs Node 20.19+ or 22.12+).
+- **Tauri v2 system dependencies**, per the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/):
+  - **macOS**: Xcode Command Line Tools: `xcode-select --install`.
+  - **Windows**: Microsoft C++ Build Tools with the "Desktop development with C++" workload, and the
+    Microsoft Edge WebView2 runtime (already included in Windows 10 1803+ and Windows 11).
+  - **Linux (Debian/Ubuntu)**:
+    ```bash
+    sudo apt update
+    sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+      libssl-dev libayatana-appindicator3-dev librsvg2-dev
+    ```
+  - **Linux (Fedora)**:
+    ```bash
+    sudo dnf install webkit2gtk4.1-devel openssl-devel curl wget file \
+      libappindicator-gtk3-devel librsvg2-devel libxdo-devel
+    sudo dnf group install "c-development"
+    ```
+
+### Steps
 
 ```bash
+git clone <repo-url> DesktopCleaner
+cd DesktopCleaner
 npm install
-npm run tauri dev
+npm run tauri dev        # run the app with hot reload
 ```
 
-Checks: `npm run check`, `npm run build`, and `cargo test` in `src-tauri`.
+Tests and checks:
+
+```bash
+(cd src-tauri && cargo test)   # Rust unit tests
+npm run check                  # svelte-check / TypeScript
+npm run build                  # frontend production build
+```
+
+Release build:
+
+```bash
+npm run tauri build
+```
+
+The executable is written to `src-tauri/target/release/` and installers/bundles to
+`src-tauri/target/release/bundle/<format>/`, e.g. `bundle/macos/DesktopCleaner.app` on macOS
+(`npm run tauri build -- --bundles app` builds only the `.app`; the default also makes a `.dmg`).
+With `"targets": "all"`, Tauri's defaults are `bundle/msi` and `bundle/nsis` on Windows and
+`bundle/deb`, `bundle/rpm` and `bundle/appimage` on Linux (so far only the macOS build has been run).
+
+### Permissions
+
+- **macOS Full Disk Access**: without it, macOS keeps the app out of protected folders (Mail, Messages,
+  other apps' containers), which then show as "System & other" on the Disk screen. Grant it in
+  System Settings › Privacy & Security › Full Disk Access (the Disk screen links there), then rescan.
+  When running with `npm run tauri dev`, the permission applies to the terminal app that launched it.
+- **Formatting drives** (Windows and Linux) always goes through the OS elevation prompt (UAC on Windows,
+  pkexec on Linux); nothing is formatted if you decline. The app itself never runs as administrator/root.
