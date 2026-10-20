@@ -80,6 +80,26 @@ The executable is written to `src-tauri/target/release/` and installers/bundles 
 With `"targets": "all"`, Tauri's defaults are `bundle/msi` and `bundle/nsis` on Windows and
 `bundle/deb`, `bundle/rpm` and `bundle/appimage` on Linux (so far only the macOS build has been run).
 
+### Releases (GitHub Actions)
+
+- `.github/workflows/ci.yml` runs `npm run check`, `npm run build` and `cargo test` on macOS, Windows and
+  Ubuntu for every push to `main` and every pull request.
+- `.github/workflows/release.yml` builds the installers (macOS universal `.app`/`.dmg`; Windows `.msi` and
+  NSIS `.exe`; Linux `.deb`, `.rpm` and `.AppImage`) and attaches them to a **draft** GitHub Release.
+  It runs when a tag like `v0.1.0` is pushed, or by hand from the Actions tab. Keep the version the same in
+  `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then:
+  ```bash
+  git tag v0.1.0
+  git push origin v0.1.0
+  ```
+  Review the draft release on GitHub and publish it.
+- **Signing**: builds are unsigned by default, so macOS Gatekeeper ("can't be opened…") and Windows
+  SmartScreen warn on first launch. To sign, add these repository secrets and uncomment them in
+  `release.yml`: `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+  and for notarization `APPLE_ID`, `APPLE_PASSWORD` (app-specific password), `APPLE_TEAM_ID`. For Windows,
+  configure `bundle.windows.certificateThumbprint` or `bundle.windows.signCommand` in `tauri.conf.json`
+  and import the certificate in a step before the build.
+
 ### Permissions
 
 - **macOS Full Disk Access**: without it, macOS keeps the app out of protected folders (Mail, Messages,
