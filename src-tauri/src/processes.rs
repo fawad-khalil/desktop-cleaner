@@ -26,6 +26,7 @@ struct Counters {
     tx: u64,
     rx_rate: f64,
     tx_rate: f64,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     seen: Option<Instant>,
 }
 

@@ -613,6 +613,8 @@ pub fn refresh_index(path: &str) -> anyhow::Result<Refreshed> {
 
 /// Applies changes reported by the live watcher to the index for `root`.
 /// Returns false when there's no such index.
+// Used by the live watcher, which Linux doesn't run.
+#[cfg_attr(all(unix, not(target_os = "macos")), allow(dead_code))]
 pub fn apply_changes(root: &Path, changed: &[PathBuf]) -> bool {
     let _w = WORK.lock().unwrap_or_else(|e| e.into_inner());
     let (node, mut meta) = {
@@ -635,6 +637,8 @@ pub fn apply_changes(root: &Path, changed: &[PathBuf]) -> bool {
 }
 
 /// Saves the index for `root` (the watcher calls this now and then).
+// Used by the live watcher, which Linux doesn't run.
+#[cfg_attr(all(unix, not(target_os = "macos")), allow(dead_code))]
 pub fn persist(root: &Path) {
     let g = TREES.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(t) = g.iter().find(|t| t.root == root) {
@@ -643,6 +647,8 @@ pub fn persist(root: &Path) {
 }
 
 /// Roots of the trees currently in memory.
+// Used by the live watcher, which Linux doesn't run.
+#[cfg_attr(all(unix, not(target_os = "macos")), allow(dead_code))]
 pub fn roots() -> Vec<PathBuf> {
     TREES.lock().map(|g| g.iter().map(|t| t.root.clone()).collect()).unwrap_or_default()
 }
@@ -785,7 +791,23 @@ mod tests {
     const M: usize = 1 << 20;
     const MB: u64 = M as u64;
 
+    /// All tests save into one store folder: the store is global, so a
+    /// per-test folder could be deleted while another test writes to it.
+    fn test_store() -> PathBuf {
+        static STORE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        STORE_DIR
+            .get_or_init(|| {
+                let d = std::env::temp_dir().join(format!("dc-index-store-{}", std::process::id()));
+                let _ = fs::remove_dir_all(&d);
+                fs::create_dir_all(&d).unwrap();
+                set_store_dir(d.clone());
+                d
+            })
+            .clone()
+    }
+
     fn temp(name: &str) -> PathBuf {
+        test_store();
         let p = std::env::temp_dir().join(format!("dc-index-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
@@ -840,9 +862,7 @@ mod tests {
     #[test]
     fn index_saves_and_loads() {
         let root = temp("save");
-        let store = temp("store");
         sample(&root);
-        set_store_dir(store.clone());
         let before = scan(root.to_str().unwrap(), true).unwrap();
         // Forget the in-memory copy; the next lookup must come from disk.
         TREES.lock().unwrap().retain(|t| t.root != root);
@@ -857,7 +877,6 @@ mod tests {
         fs::write(&f, b"garbage").unwrap();
         assert!(load(&root).is_none());
         fs::remove_dir_all(&root).unwrap();
-        fs::remove_dir_all(&store).unwrap();
     }
 
     #[test]
