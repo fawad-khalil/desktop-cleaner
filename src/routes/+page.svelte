@@ -7,6 +7,8 @@
   import Recommendations from "$lib/views/Recommendations.svelte";
   import Drives from "$lib/views/Drives.svelte";
   import { nav, type TabId } from "$lib/nav.svelte";
+  import { cleaning, refreshCleaningStats } from "$lib/stats.svelte";
+  import { bytes } from "$lib/format";
   import "../app.css";
 
   const tabs = [
@@ -23,6 +25,10 @@
   // Views stay mounted after first visit so scans aren't lost when switching
   // tabs. Processes is the exception: it polls, so it only lives while shown.
   let visited = $state<Set<TabId>>(new Set(["disk"]));
+
+  $effect(() => {
+    refreshCleaningStats();
+  });
 
   function go(id: TabId) {
     nav.tab = id;
@@ -41,6 +47,12 @@
         <span class="icon">{t.icon}</span>{t.label}
       </button>
     {/each}
+    {#if cleaning.stats}
+      <div class="freed" title="Space freed by moving items to the Trash">
+        <span>Freed this session</span><strong>{bytes(cleaning.stats.session_bytes)}</strong>
+        <span>All time</span><strong>{bytes(cleaning.stats.total_bytes)}</strong>
+      </div>
+    {/if}
   </nav>
   <main>
     {#each tabs as t}
@@ -52,3 +64,11 @@
     {/each}
   </main>
 </div>
+
+<style>
+  .freed {
+    margin-top: auto; padding: 12px 10px 4px; border-top: 1px solid #ffffff1a;
+    display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; font-size: 12px; color: var(--nav-text);
+  }
+  .freed strong { color: #fff; text-align: right; font-variant-numeric: tabular-nums; }
+</style>

@@ -6,6 +6,7 @@
   } from "../api";
   import { bytes, daysSince, mem } from "../format";
   import { nav, type TabId } from "../nav.svelte";
+  import CleanedStats from "../CleanedStats.svelte";
 
   interface Rec {
     level: "high" | "medium" | "info";
@@ -115,6 +116,7 @@
   <h1>Recommendations</h1>
   <p class="muted">Suggestions based on your drives, caches, update leftovers, downloads, applications and running processes.</p>
 </header>
+<CleanedStats />
 {#if error}<p class="error">{error}</p>{/if}
 
 {#if recs}

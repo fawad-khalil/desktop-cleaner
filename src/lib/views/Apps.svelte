@@ -2,6 +2,7 @@
   import { ask } from "@tauri-apps/plugin-dialog";
   import { api, type AppInfo, type AppLeftover, type RemoveOutcome } from "../api";
   import { ago, bytes } from "../format";
+  import { refreshCleaningStats } from "../stats.svelte";
 
   type Col = "name" | "publisher" | "version" | "size" | "last_used";
   interface SortKey {
@@ -115,6 +116,7 @@
     try {
       const res = await api.removeApp(isWin ? a.name : a.location!, extra);
       outcome = { app: a.name, res };
+      refreshCleaningStats();
       removing = null;
       if (res.moved.length) load();
     } catch (e) {

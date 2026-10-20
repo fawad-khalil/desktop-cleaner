@@ -6,6 +6,8 @@
     type CacheInfo, type CleanResult, type Leftover, type Preview, type Target,
   } from "../api";
   import { ago, bytes } from "../format";
+  import CleanedStats from "../CleanedStats.svelte";
+  import { refreshCleaningStats } from "../stats.svelte";
 
   let caches = $state<CacheInfo[] | null>(null);
   let leftovers = $state<Leftover[] | null>(null);
@@ -150,6 +152,7 @@
     busy = `Moving items to the ${trashName}…`;
     try {
       result = await cleanupApi.execute(paths);
+      refreshCleaningStats();
       preview = null;
       selected = new Set();
       pickedLeftovers = new Set();
@@ -171,6 +174,7 @@
     System files are always excluded.
   </p>
 </header>
+<CleanedStats history />
 {#if error}<p class="error">{error}</p>{/if}
 
 {#if result}
