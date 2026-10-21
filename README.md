@@ -127,6 +127,11 @@ With `"targets": "all"`, Tauri's defaults are `bundle/msi` and `bundle/nsis` on 
 - **Formatting drives** (Windows and Linux) always goes through the OS elevation prompt (UAC on Windows,
   pkexec on Linux); nothing is formatted if you decline. The app itself never runs as administrator/root.
 
+## Support
+
+If DesktopCleaner is useful to you, you can support its development on
+[thanks.dev](https://thanks.dev/u/gh/fawad-khalil).
+
 ## License
 
 [MIT](LICENSE) © 2026 Fawad Khalil
