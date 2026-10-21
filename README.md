@@ -94,12 +94,23 @@ With `"targets": "all"`, Tauri's defaults are `bundle/msi` and `bundle/nsis` on 
   on macOS, Windows and Ubuntu.
 - **Pull requests**: once the tests pass, the installers are built and uploaded as workflow artifacts
   (on the run's summary page) so you can try them before merging.
-- **Releases are automatic**: when tests pass on a push to `main` and there's no tag yet for the version in
-  `src-tauri/tauri.conf.json`, the pipeline builds the installers (macOS universal `.dmg`/`.app`;
-  Windows `.msi` and NSIS `.exe`; Linux `.deb`, `.rpm` and `.AppImage`) and publishes a GitHub Release
-  `vX.Y.Z` with them attached and generated release notes, which creates the tag on that commit. If the tag
-  already exists, the release is skipped. To release: bump the version in `tauri.conf.json`,
-  `package.json` and `src-tauri/Cargo.toml`, open a PR, merge it.
+- **Releases and versions are automatic**: every push to `main` whose tests pass is released. The pipeline
+  finds the latest `v*` tag, reads the commit messages since then and picks the next version
+  ([Conventional Commits](https://www.conventionalcommits.org/)):
+  - `feat: …` → minor (0.1.3 → 0.2.0);
+  - `type!: …` or a `BREAKING CHANGE:` line → major (1.4.2 → 2.0.0), except that while the major version is
+    0 it bumps the minor instead (0.4.1 → 0.5.0), the usual 0.x convention;
+  - anything else → patch (0.1.0 → 0.1.1).
+
+  Merge commits count their body too, so a PR titled `feat: …` releases a minor version whether it's merged
+  or squashed. The version is stamped into `tauri.conf.json`, `package.json` and `Cargo.toml` for that build
+  only, then the installers (macOS universal `.dmg`/`.app`; Windows `.msi` and NSIS `.exe`; Linux `.deb`,
+  `.rpm` and `.AppImage`) are attached to GitHub Release `vX.Y.Z` with generated notes, which creates the
+  tag. **Tags are the source of truth**: the bump isn't committed back (`main` is protected), so the
+  version in the repo files is the last one set by hand and the first release's version. With no new
+  commits since the last tag, nothing is released.
+- **Pull requests** show the version merging would release in the run's summary, and the installer
+  artifacts are named with it.
 - **Signing**: builds are unsigned by default, so macOS Gatekeeper ("can't be opened…") and Windows
   SmartScreen warn on first launch. To sign, add these repository secrets and uncomment them in `ci.yml`:
   `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and for
