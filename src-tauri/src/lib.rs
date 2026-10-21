@@ -64,11 +64,12 @@ fn open_full_disk_access() -> Result<(), String> {
     Ok(())
 }
 
-/// Whether the app has Full Disk Access (always true off macOS). Checked
-/// without prompting; `recheck` after the user has been to System Settings.
+/// Whether the app has Full Disk Access (always true off macOS), and why a
+/// grant might not apply. Checked without prompting; `recheck` after the
+/// user has been to System Settings.
 #[tauri::command]
-fn full_disk_access(recheck: Option<bool>) -> bool {
-    privacy::full_disk_access(recheck.unwrap_or(false))
+async fn full_disk_access(recheck: Option<bool>) -> Result<privacy::Access, String> {
+    blocking(move || Ok(privacy::access(recheck.unwrap_or(false)))).await
 }
 
 #[tauri::command]
