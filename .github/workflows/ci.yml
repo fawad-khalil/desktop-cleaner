@@ -5,10 +5,13 @@ name: CI
 #   test on macOS, Windows and Linux;
 # - pull requests (and manual runs that don't release): also build the
 #   installers and upload them as workflow artifacts to try before merging;
-# - pushes to main where all tests pass and there's no tag yet for the
-#   version in src-tauri/tauri.conf.json: build the installers and publish a
-#   GitHub Release vX.Y.Z with them attached and generated notes, which
-#   creates the tag on that commit. Bumping the version is what releases.
+# - pushes to main where all tests pass: work out the next version from the
+#   commit messages since the last v* tag (conventional commits: "feat:" ->
+#   minor, "type!:" or "BREAKING CHANGE" -> major, which stays a minor bump
+#   while the major is 0; anything else -> patch), stamp it into the app for
+#   this build only, build the installers and publish GitHub Release vX.Y.Z
+#   with generated notes, which creates the tag. Tags are the source of
+#   truth for versions; the bump is never committed back (main is protected).
 
 on:
   push:
@@ -73,31 +76,72 @@ jobs:
     outputs:
       # release: publish vX.Y.Z | artifacts: installers as workflow artifacts | none
       mode: ${{ steps.plan.outputs.mode }}
+      version: ${{ steps.plan.outputs.version }}
       tag: ${{ steps.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags and history, to find the last release
 
       - id: plan
         env:
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
         run: |
-          tag="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          exists=false
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then exists=true; fi
-          if [ "$EVENT" = "pull_request" ]; then
-            mode=artifacts
-          elif [ "$REF" = "refs/heads/main" ] && [ "$exists" = false ]; then
-            mode=release
-          elif [ "$EVENT" = "workflow_dispatch" ]; then
-            mode=artifacts
+          set -euo pipefail
+          # Highest version tag reachable from this commit.
+          last=$(git tag --merged HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+          if [ -n "$last" ]; then
+            base="${last#v}"
+            count=$(git rev-list --count "$last..HEAD")
+            log=$(git log --format='%s%n%b' "$last..HEAD")
           else
-            mode=none
-            echo "::notice::$tag is already released; bump the version in tauri.conf.json, package.json and Cargo.toml to release again."
+            # First release: use the version in the repo as is.
+            base=$(node -p "require('./src-tauri/tauri.conf.json').version")
+            count=$(git rev-list --count HEAD)
+            log=""
           fi
-          echo "mode=$mode" >> "$GITHUB_OUTPUT"
-          echo "Mode: $mode ($tag, tag exists: $exists)"
+          IFS=. read -r major minor patch <<< "$base"
+          if [ -z "$last" ]; then
+            next="$base"; why="first release"
+          elif printf '%s\n' "$log" | grep -qE '^[A-Za-z]+(\([^)]*\))?!:|BREAKING[ -]CHANGE'; then
+            if [ "$major" = 0 ]; then next="0.$((minor + 1)).0"; why="breaking change (minor while 0.x)"
+            else next="$((major + 1)).0.0"; why="breaking change"; fi
+          elif printf '%s\n' "$log" | grep -qE '^feat(\([^)]*\))?:'; then
+            next="$major.$((minor + 1)).0"; why="new feature"
+          else
+            next="$major.$minor.$((patch + 1))"; why="fixes and other changes"
+          fi
+
+          if [ "$count" = 0 ]; then
+            mode=none
+          elif [ "$EVENT" = "pull_request" ]; then
+            mode=artifacts
+          elif [ "$REF" = "refs/heads/main" ]; then
+            mode=release
+          else
+            mode=artifacts
+          fi
+          {
+            echo "mode=$mode"
+            echo "version=$next"
+            echo "tag=v$next"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Version"
+            echo ""
+            echo "| Last release | Commits since | Next version | Why |"
+            echo "|---|---|---|---|"
+            echo "| ${last:-none} | $count | **v$next** | $why |"
+            echo ""
+            case "$mode" in
+              release) echo "Releasing **v$next** from this commit." ;;
+              artifacts) echo "Merging this would release **v$next**. Installers for it are attached to this run as artifacts." ;;
+              none) echo "No commits since $last, so nothing to release." ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Mode: $mode, next v$next ($why), $count commit(s) since ${last:-the start}"
 
   create-release:
     name: Create release
@@ -173,6 +217,23 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Only in this workspace; the repo keeps the last released version.
+      - name: Stamp version ${{ needs.plan.outputs.version }}
+        shell: bash
+        env:
+          V: ${{ needs.plan.outputs.version }}
+        run: |
+          node -e '
+            const fs = require("fs"), v = process.env.V;
+            for (const f of ["src-tauri/tauri.conf.json", "package.json"]) {
+              const j = JSON.parse(fs.readFileSync(f, "utf8"));
+              j.version = v;
+              fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
+            }
+            const c = "src-tauri/Cargo.toml";
+            fs.writeFileSync(c, fs.readFileSync(c, "utf8").replace(/^version = ".*"$/m, `version = "${v}"`));
+          '
+
       - name: Build and attach to the release
         if: needs.plan.outputs.mode == 'release'
         uses: tauri-apps/tauri-action@v0
@@ -206,7 +267,7 @@ jobs:
         if: needs.plan.outputs.mode == 'artifacts'
         uses: actions/upload-artifact@v4
         with:
-          name: DesktopCleaner-${{ runner.os }}
+          name: DesktopCleaner-${{ needs.plan.outputs.version }}-${{ runner.os }}
           if-no-files-found: error
           path: |
             src-tauri/target/**/release/bundle/dmg/*.dmg
