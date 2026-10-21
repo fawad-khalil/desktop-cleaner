@@ -125,16 +125,23 @@ With `"targets": "all"`, Tauri's defaults are `bundle/msi` and `bundle/nsis` on 
   `Group Containers`, removable and network drives) and others with Full Disk Access only (Mail, Messages,
   Safari). On first launch the app checks for Full Disk Access without prompting (it tries to read the
   per-user `TCC.db`) and, if it's missing, shows **Grant Full Disk Access once** with a button to
-  System Settings › Privacy & Security › Full Disk Access. **Not now** is remembered.
+  System Settings › Privacy & Security › Full Disk Access, **I've granted it, check again** (which explains
+  what's wrong if access still isn't there) and **Continue without**, which is remembered.
   - Without it, scans skip those folders entirely, so no prompts fire; their space counts as
     "System & other" and the Disk screen says how many were skipped. Other drives are only read when you
     open them yourself. Desktop, Documents and Downloads are still scanned, so macOS asks for those.
   - Once it's granted, the next index update rescans the drive to pick up what was skipped.
   - When running with `npm run tauri dev`, macOS attributes the app to the terminal that launched it, so
-    grant Full Disk Access to the terminal (or your editor) instead.
-- **Why macOS keeps asking again**: permission answers are tied to the app's code signature. Unsigned
-  builds are ad-hoc signed, which gives every build a new signature, so macOS forgets the answers after
-  each rebuild or update. A stable signing identity fixes that (see below).
+    grant Full Disk Access to the terminal (or your editor) instead; the card names it.
+  - **Switch is on but nothing changes?** Builds before this fix were only linker-signed: their signature
+    isn't tied to the bundle (`codesign -dv DesktopCleaner.app` shows `Identifier=desktop_cleaner-…` and
+    `Info.plist=not bound`), so macOS can't match the switch to the running app. Install a newer build, remove
+    the old entry in Full Disk Access with −, add the new app with +, and reopen it.
+- **Why macOS keeps asking again**: permission answers are tied to the app's code signature. Without a
+  signing identity, builds are ad-hoc signed (`bundle.macOS.signingIdentity` is `"-"` in `tauri.conf.json`,
+  so the signature at least covers the whole bundle and its identifier). An ad-hoc signature changes with
+  every build, so macOS forgets the answers after each rebuild or update. A stable signing identity fixes
+  that (see below).
 - **Formatting drives** (Windows and Linux) always goes through the OS elevation prompt (UAC on Windows,
   pkexec on Linux); nothing is formatted if you decline. The app itself never runs as administrator/root.
 
@@ -153,7 +160,7 @@ identity, the signature's requirement stays the same from build to build, so ans
    ```bash
    APPLE_SIGNING_IDENTITY="DesktopCleaner Dev" npm run tauri build -- --bundles app
    ```
-   Tauri signs the `.app` with that identity. Grant Full Disk Access to that build once; later builds signed
+   Tauri signs the `.app` with that identity (the variable overrides the ad-hoc `"-"` in `tauri.conf.json`). Grant Full Disk Access to that build once; later builds signed
    the same way keep it. Keep the bundle identifier (`com.fawadkhalil.desktopcleaner`) unchanged, since it's
    part of the requirement too. A self-signed build is for your own Mac only: Gatekeeper still warns
    elsewhere.

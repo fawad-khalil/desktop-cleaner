@@ -12,11 +12,24 @@ function loadNotNow() {
   }
 }
 
+export interface AccessInfo {
+  granted: boolean;
+  /** Running outside an app bundle (e.g. `tauri dev`): macOS applies this app's permission instead. */
+  host: string | null;
+  /** The build's signature isn't sealed to its bundle, so the Settings switch can't apply to it. */
+  unsealed: boolean;
+}
+
 /** macOS Full Disk Access, shared by the card and the views. `granted` is
  * null until checked; it's always true off macOS. */
-export const access = $state<{ granted: boolean | null; notNow: boolean }>({ granted: null, notNow: loadNotNow() });
+export const access = $state<{ granted: boolean | null; notNow: boolean; host: string | null; unsealed: boolean }>({
+  granted: null,
+  notNow: loadNotNow(),
+  host: null,
+  unsealed: false,
+});
 
-/** True once the user has granted access or said "Not now", so work that
+/** True once the user has granted access or chose "Continue without", so work that
  * would read protected folders can start without competing with the card. */
 export function decided() {
   return access.granted === true || (access.granted === false && access.notNow);
@@ -25,7 +38,10 @@ export function decided() {
 /** Checks without prompting; `recheck` after a visit to System Settings. */
 export async function checkAccess(recheck = false) {
   try {
-    access.granted = await invoke<boolean>("full_disk_access", { recheck });
+    const a = await invoke<AccessInfo>("full_disk_access", { recheck });
+    access.host = a.host;
+    access.unsealed = a.unsealed;
+    access.granted = a.granted;
   } catch {
     access.granted = true;
   }
