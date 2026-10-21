@@ -6,6 +6,7 @@ mod format;
 mod health;
 mod index;
 mod leftovers;
+mod privacy;
 mod processes;
 mod safety;
 mod search;
@@ -61,6 +62,13 @@ fn open_full_disk_access() -> Result<(), String> {
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Whether the app has Full Disk Access (always true off macOS). Checked
+/// without prompting; `recheck` after the user has been to System Settings.
+#[tauri::command]
+fn full_disk_access(recheck: Option<bool>) -> bool {
+    privacy::full_disk_access(recheck.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -216,6 +224,7 @@ pub fn run() {
             scan_progress,
             refresh_index,
             open_full_disk_access,
+            full_disk_access,
             largest_files,
             check_search,
             list_processes,

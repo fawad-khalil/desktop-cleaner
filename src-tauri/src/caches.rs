@@ -11,6 +11,9 @@ pub struct CacheInfo {
     pub path: String,
     pub size: u64,
     pub files: u64,
+    /// macOS protects it and the app doesn't have Full Disk Access, so it
+    /// wasn't read (size and files are 0).
+    pub needs_access: bool,
 }
 
 fn candidates() -> Vec<(&'static str, &'static str, PathBuf)> {
@@ -90,8 +93,10 @@ pub fn list() -> Vec<CacheInfo> {
         .into_par_iter()
         .filter(|(_, _, p)| p.is_dir())
         .map(|(name, group, p)| {
-            let (size, files) = crate::disk::dir_size(&p);
+            let needs_access = crate::privacy::withheld(&p);
+            let (size, files) = if needs_access { (0, 0) } else { crate::disk::dir_size(&p) };
             CacheInfo {
+                needs_access,
                 name: name.to_string(),
                 group: group.to_string(),
                 path: p.to_string_lossy().into_owned(),

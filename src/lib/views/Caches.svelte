@@ -45,8 +45,12 @@
             <td>{c.name}</td>
             <td>{c.group}</td>
             <td><code class="path">{c.path}</code></td>
-            <td class="num">{c.files.toLocaleString()}</td>
-            <td class="num">{bytes(c.size)}</td>
+            {#if c.needs_access}
+              <td class="num muted" colspan="2" title="macOS protects this folder; grant Full Disk Access to measure it">Needs Full Disk Access</td>
+            {:else}
+              <td class="num">{c.files.toLocaleString()}</td>
+              <td class="num">{bytes(c.size)}</td>
+            {/if}
           </tr>
         {/each}
       </tbody>

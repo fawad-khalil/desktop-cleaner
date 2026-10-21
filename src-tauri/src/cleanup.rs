@@ -81,6 +81,9 @@ fn contents(
     out: &mut Vec<Candidate>,
     refused: &mut Vec<Refusal>,
 ) {
+    if crate::privacy::withheld(root) {
+        return;
+    }
     let Ok(rd) = fs::read_dir(root) else { return };
     let source = root.to_string_lossy().into_owned();
     let entries: Vec<_> = rd.flatten().collect();
@@ -149,6 +152,9 @@ fn old_files(
             continue; // never descend into protected trees
         }
         if ft.is_dir() {
+            if crate::privacy::withheld(&p) {
+                continue;
+            }
             old_files(&p, cutoff, min_size, search, source, out, refused);
         } else if ft.is_file() {
             let Ok(md) = e.metadata() else { continue };

@@ -180,6 +180,10 @@ fn file_name(p: &Path) -> String {
 /// Reads a folder's direct entries: (files as nodes, subfolder paths).
 /// File details are read in parallel; cache folders can hold 100k files.
 fn read_entries(dir: &Path) -> Option<(Vec<Node>, Vec<PathBuf>)> {
+    // Protected without Full Disk Access: counted as unreadable, never read.
+    if crate::privacy::withheld(dir) {
+        return None;
+    }
     let ents: Vec<fs::DirEntry> = fs::read_dir(dir).ok()?.flatten().collect();
     let items: Vec<(Option<Node>, Option<PathBuf>)> = ents
         .par_iter()
@@ -338,6 +342,9 @@ struct Tree {
     updated_at: u64,
     /// FSEvents id the index is current up to (macOS).
     event_id: Option<u64>,
+    /// Scanned with Full Disk Access; without it protected folders were
+    /// skipped, so granting it later calls for a full rescan.
+    fda: bool,
 }
 
 static TREES: Mutex<Vec<Tree>> = Mutex::new(Vec::new());
@@ -359,6 +366,8 @@ struct Saved {
     updated_at: u64,
     event_id: Option<u64>,
     tree: Node,
+    #[serde(default)]
+    fda: bool,
 }
 
 fn store_file(root: &Path) -> Option<PathBuf> {
@@ -380,6 +389,7 @@ fn save(t: &Tree) -> anyhow::Result<()> {
         updated_at: t.updated_at,
         event_id: t.event_id,
         tree: t.node.clone(),
+        fda: t.fda,
     };
     let bytes = rmp_serde::to_vec(&saved)?;
     let tmp = file.with_extension("tmp");
@@ -400,7 +410,7 @@ fn load(root: &Path) -> Option<Tree> {
     }
     let mut node = s.tree;
     node.recompute();
-    Some(Tree { root: root.to_path_buf(), node, full_scan_at: s.full_scan_at, updated_at: s.updated_at, event_id: s.event_id })
+    Some(Tree { root: root.to_path_buf(), node, full_scan_at: s.full_scan_at, updated_at: s.updated_at, event_id: s.event_id, fda: s.fda })
 }
 
 fn put(t: Tree) {
@@ -489,9 +499,10 @@ fn full_scan(root: &Path) -> anyhow::Result<Tree> {
     disk::set_scan_root(&md);
     // Taken before walking so nothing that changes during the walk is missed.
     let event_id = current_event_id();
+    let fda = crate::privacy::full_disk_access(false);
     let node = walk(root, file_name(root));
     let t = now();
-    Ok(Tree { root: root.to_path_buf(), node, full_scan_at: t, updated_at: t, event_id })
+    Ok(Tree { root: root.to_path_buf(), node, full_scan_at: t, updated_at: t, event_id, fda })
 }
 
 /// Shows `path`: from memory or the saved index when possible (unless
@@ -568,10 +579,10 @@ pub fn refresh_index(path: &str) -> anyhow::Result<Refreshed> {
     let path = PathBuf::from(path);
     let _w = WORK.lock().unwrap_or_else(|e| e.into_inner());
     // Take the tree out so lookups stay answerable from a copy meanwhile.
-    let (root, node, full_scan_at, event_id) = {
+    let (root, node, full_scan_at, event_id, fda) = {
         let g = TREES.lock().unwrap_or_else(|e| e.into_inner());
         match g.iter().rev().find(|t| path.starts_with(&t.root)) {
-            Some(t) => (t.root.clone(), t.node.clone(), t.full_scan_at, t.event_id),
+            Some(t) => (t.root.clone(), t.node.clone(), t.full_scan_at, t.event_id, t.fda),
             None => {
                 drop(g);
                 let Some(t) = path.ancestors().find_map(load) else {
@@ -579,13 +590,15 @@ pub fn refresh_index(path: &str) -> anyhow::Result<Refreshed> {
                     let result = scan(&path.to_string_lossy(), true)?;
                     return Ok(Refreshed { result, method: Method::Full });
                 };
-                let v = (t.root.clone(), t.node.clone(), t.full_scan_at, t.event_id);
+                let v = (t.root.clone(), t.node.clone(), t.full_scan_at, t.event_id, t.fda);
                 put(t);
                 v
             }
         }
     };
-    if now().saturating_sub(full_scan_at) > FULL_RESCAN_SECS {
+    // Folders skipped for lack of Full Disk Access are only read again by a
+    // full rescan once it has been granted.
+    if now().saturating_sub(full_scan_at) > FULL_RESCAN_SECS || (!fda && crate::privacy::full_disk_access(false)) {
         drop(_w);
         let result = scan(&root.to_string_lossy(), true)?;
         let result = if path == root { result } else { lookup(&path).unwrap_or(result) };
@@ -604,7 +617,7 @@ pub fn refresh_index(path: &str) -> anyhow::Result<Refreshed> {
         }
         None => (refresh(node, &root, &Mode::Mtime), Method::Mtime),
     };
-    let t = Tree { root: root.clone(), node, full_scan_at, updated_at: now(), event_id: new_event_id };
+    let t = Tree { root: root.clone(), node, full_scan_at, updated_at: now(), event_id: new_event_id, fda };
     let _ = save(&t);
     put(t);
     let result = lookup(&path).ok_or_else(|| anyhow::anyhow!("lost {}", path.display()))?;
@@ -620,7 +633,7 @@ pub fn apply_changes(root: &Path, changed: &[PathBuf]) -> bool {
     let (node, mut meta) = {
         let g = TREES.lock().unwrap_or_else(|e| e.into_inner());
         let Some(t) = g.iter().find(|t| t.root == root) else { return false };
-        (t.node.clone(), (t.full_scan_at, t.event_id))
+        (t.node.clone(), (t.full_scan_at, t.event_id, t.fda))
     };
     if let Ok(md) = fs::symlink_metadata(root) {
         disk::set_scan_root(&md);
@@ -628,7 +641,7 @@ pub fn apply_changes(root: &Path, changed: &[PathBuf]) -> bool {
     meta.1 = current_event_id().or(meta.1);
     let (dirty, ancestors) = resolve_dirty(root, &node, changed);
     let node = refresh(node, root, &Mode::Dirty { dirty: &dirty, ancestors: &ancestors });
-    let t = Tree { root: root.to_path_buf(), node, full_scan_at: meta.0, updated_at: now(), event_id: meta.1 };
+    let t = Tree { root: root.to_path_buf(), node, full_scan_at: meta.0, updated_at: now(), event_id: meta.1, fda: meta.2 };
     let mut g = TREES.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(slot) = g.iter_mut().find(|x| x.root == root) {
         *slot = t;

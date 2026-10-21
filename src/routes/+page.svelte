@@ -10,6 +10,7 @@
   import { nav, type TabId } from "$lib/nav.svelte";
   import { cleaning, refreshCleaningStats } from "$lib/stats.svelte";
   import { bytes } from "$lib/format";
+  import FullDiskAccess from "$lib/FullDiskAccess.svelte";
   import "../app.css";
 
   const tabs = [
@@ -58,6 +59,7 @@
     {/if}
   </nav>
   <main>
+    <FullDiskAccess />
     {#each tabs as t}
       {#if active === t.id || (visited.has(t.id) && t.id !== "processes" && t.id !== "health")}
         <section hidden={active !== t.id}>

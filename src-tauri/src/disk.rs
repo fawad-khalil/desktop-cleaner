@@ -86,8 +86,10 @@ pub(crate) fn skip_dir(path: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {
         // /System/Volumes/Data holds the same files as /Users, /Applications
-        // etc. through firmlinks; /Volumes holds other drives.
-        if path == Path::new("/System/Volumes") || path == Path::new("/Volumes") || path == Path::new("/dev") {
+        // etc. through firmlinks; /Volumes holds other drives, /Network and
+        // /net network shares (reading those asks for permission). A drive
+        // the user opens itself is a scan root, so it is still read.
+        if ["/System/Volumes", "/Volumes", "/Network", "/net", "/dev"].iter().any(|p| path == Path::new(p)) {
             return true;
         }
     }
@@ -199,9 +201,11 @@ impl Acc {
 /// Recursively sizes `dir`. Symlinks and junctions are never followed, so a
 /// scan can't loop or escape into another volume.
 fn walk(dir: &Path) -> Acc {
-    let rd = match fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(_) => {
+    // Protected without Full Disk Access: not read, so no prompt; counted
+    // as skipped like any folder that can't be read.
+    let rd = match (!crate::privacy::withheld(dir)).then(|| fs::read_dir(dir)) {
+        Some(Ok(rd)) => rd,
+        _ => {
             return Acc {
                 skipped: 1,
                 ..Default::default()
@@ -306,6 +310,9 @@ pub fn largest_files(
     search: Option<&crate::search::Matcher>,
 ) -> Vec<FileItem> {
     fn go(dir: &Path, category: Option<&str>, age: Option<usize>, limit: usize, search: Option<&crate::search::Matcher>) -> Vec<FileItem> {
+        if crate::privacy::withheld(dir) {
+            return Vec::new();
+        }
         let Ok(rd) = fs::read_dir(dir) else { return Vec::new() };
         let mut subdirs = Vec::new();
         let mut out = Vec::new();
@@ -316,7 +323,11 @@ pub fn largest_files(
             }
             let p = ent.path();
             if ft.is_dir() {
-                subdirs.push(p);
+                // Like the scan, other drives (removable, network) and the
+                // data volume's second copy of the disk aren't read.
+                if !skip_dir(&p) {
+                    subdirs.push(p);
+                }
             } else if ft.is_file() {
                 if category.is_some_and(|c| c != category_for(&p)) {
                     continue;
