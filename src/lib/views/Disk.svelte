@@ -1,5 +1,6 @@
 <script lang="ts">
   import { listen } from "@tauri-apps/api/event";
+  import { untrack } from "svelte";
   import { api, type DriveInfo, type Entry, type FileItem, type Refreshed, type ScanResult } from "../api";
   import { ago, bytes, freeColor, pct, since, systemColor, typeColors } from "../format";
   import Pie, { type Slice } from "../Pie.svelte";
@@ -7,8 +8,7 @@
   import Sunburst from "../Sunburst.svelte";
   import SearchBox from "../SearchBox.svelte";
   import { emptySearch, forBackend, matcher } from "../search";
-
-  const isMac = navigator.userAgent.includes("Mac");
+  import { access, decided, isMac } from "../privacy.svelte";
 
   let drives = $state<DriveInfo[]>([]);
   let error = $state("");
@@ -17,7 +17,9 @@
   let scan = $state<ScanResult | null>(null);
   let scanning = $state("");
   let progress = $state(0);
-  let autoStarted = false;
+  let autoStarted = $state(false);
+  /** The system drive, scanned once the Full Disk Access card is answered. */
+  let autoPath = $state("");
   /** Root of the index being brought up to date in the background. */
   let refreshing = $state("");
   let lastMethod = $state<Refreshed["method"] | null>(null);
@@ -42,11 +44,29 @@
       drives = d;
       // Start on the system drive so the breakdown is there without a click.
       const sys = d.find((x) => x.mount_point === "/" || /^c:\\?$/i.test(x.mount_point)) ?? d[0];
-      if (sys && !autoStarted) {
-        autoStarted = true;
-        open(sys.mount_point);
-      }
+      if (sys) autoPath = sys.mount_point;
     }).catch((e) => (error = String(e)));
+  });
+
+  // Wait for the Full Disk Access choice so the first scan doesn't set off
+  // macOS prompts while the card is asking.
+  $effect(() => {
+    if (autoPath && !autoStarted && decided()) {
+      autoStarted = true;
+      open(autoPath);
+    }
+  });
+
+  // Access granted while open: folders skipped without it are read by a
+  // full rescan, which refreshing the index now does.
+  let wasDenied = false;
+  $effect(() => {
+    if (access.granted === false) wasDenied = true;
+    else if (access.granted && wasDenied) {
+      wasDenied = false;
+      const root = scan?.root;
+      if (root) untrack(() => refreshIndex(root));
+    }
   });
 
   $effect(() => {
@@ -241,6 +261,10 @@
   {/each}
 </div>
 
+{#if autoPath && !autoStarted && !scan}
+  <p class="muted">Choose above whether to grant Full Disk Access; the drive is analyzed right after.</p>
+{/if}
+
 {#if scanning && !driveFor(scanning)}
   <p class="muted">Scanning {scanning}… {progress.toLocaleString()} files so far</p>
 {:else if scanning && !scan}
@@ -266,11 +290,12 @@
     <button onclick={() => open(scan!.root, true)} disabled={!!scanning || !!refreshing} title="Read the whole drive again from scratch">Full rescan</button>
   </div>
 
-  {#if isMac && scan.skipped && driveFor(scan.path)}
+  {#if isMac && access.granted === false && scan.skipped && driveFor(scan.path)}
     <div class="card hint">
-      macOS kept DesktopCleaner out of {scan.skipped.toLocaleString()} protected folders (Mail, Messages, other apps' data…), so they
-      count as <em>System &amp; other</em>. For a complete picture, allow Full Disk Access and rescan.
-      <button class="link" onclick={() => api.openFullDiskAccess()}>Open Privacy settings</button>
+      Without Full Disk Access, DesktopCleaner skipped {scan.skipped.toLocaleString()} protected or unreadable folders (Mail, Messages,
+      Photos, Contacts, other apps' data…) instead of setting off macOS prompts; they count as
+      <em>System &amp; other</em>. Grant it once for a complete picture; the next update rescans them.
+      <button class="link" onclick={() => api.openFullDiskAccess()}>Open Full Disk Access settings</button>
     </div>
   {/if}
 

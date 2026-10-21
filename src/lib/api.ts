@@ -99,6 +99,8 @@ export interface CacheInfo {
   path: string;
   size: number;
   files: number;
+  /** Protected by macOS and not read without Full Disk Access (size 0). */
+  needs_access: boolean;
 }
 
 export interface AppInfo {
@@ -135,6 +137,8 @@ export const api = {
   /** Files counted so far by the scan in progress. */
   scanProgress: () => invoke<number>("scan_progress"),
   openFullDiskAccess: () => invoke<void>("open_full_disk_access"),
+  /** macOS Full Disk Access, checked without prompting (always true elsewhere). */
+  fullDiskAccess: (recheck = false) => invoke<boolean>("full_disk_access", { recheck }),
   largestFiles: (path: string, category: string | null, age: number | null, limit = 100, search: SearchFilter | null = null) =>
     invoke<FileItem[]>("largest_files", { path, category, age, limit, search }),
   /** Why a search pattern is invalid for the backend (Rust regex syntax), or null. */

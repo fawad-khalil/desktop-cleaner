@@ -120,12 +120,57 @@ With `"targets": "all"`, Tauri's defaults are `bundle/msi` and `bundle/nsis` on 
 
 ### Permissions
 
-- **macOS Full Disk Access**: without it, macOS keeps the app out of protected folders (Mail, Messages,
-  other apps' containers), which then show as "System & other" on the Disk screen. Grant it in
-  System Settings › Privacy & Security › Full Disk Access (the Disk screen links there), then rescan.
-  When running with `npm run tauri dev`, the permission applies to the terminal app that launched it.
+- **macOS Full Disk Access (recommended, once)**: macOS guards some places with a prompt (Contacts,
+  Calendars, Reminders, Photos, iCloud Drive, other apps' data in `~/Library/Containers` and
+  `Group Containers`, removable and network drives) and others with Full Disk Access only (Mail, Messages,
+  Safari). On first launch the app checks for Full Disk Access without prompting (it tries to read the
+  per-user `TCC.db`) and, if it's missing, shows **Grant Full Disk Access once** with a button to
+  System Settings › Privacy & Security › Full Disk Access. **Not now** is remembered.
+  - Without it, scans skip those folders entirely, so no prompts fire; their space counts as
+    "System & other" and the Disk screen says how many were skipped. Other drives are only read when you
+    open them yourself. Desktop, Documents and Downloads are still scanned, so macOS asks for those.
+  - Once it's granted, the next index update rescans the drive to pick up what was skipped.
+  - When running with `npm run tauri dev`, macOS attributes the app to the terminal that launched it, so
+    grant Full Disk Access to the terminal (or your editor) instead.
+- **Why macOS keeps asking again**: permission answers are tied to the app's code signature. Unsigned
+  builds are ad-hoc signed, which gives every build a new signature, so macOS forgets the answers after
+  each rebuild or update. A stable signing identity fixes that (see below).
 - **Formatting drives** (Windows and Linux) always goes through the OS elevation prompt (UAC on Windows,
   pkexec on Linux); nothing is formatted if you decline. The app itself never runs as administrator/root.
+
+### Keeping macOS permissions across rebuilds and updates
+
+macOS remembers permissions (Full Disk Access and the prompts above) per code signature. With a stable
+identity, the signature's requirement stays the same from build to build, so answers stick.
+
+**Local builds: a self-signed code-signing certificate** (one-time, nothing leaves your Mac):
+
+1. Open **Keychain Access** › menu **Keychain Access › Certificate Assistant › Create a Certificate…**
+2. Name it e.g. `DesktopCleaner Dev`, Identity Type **Self Signed Root**, Certificate Type **Code Signing**,
+   then **Create**. It goes to your login keychain.
+3. Check it's usable: `security find-identity -v -p codesigning` should list `DesktopCleaner Dev`.
+4. Build with it:
+   ```bash
+   APPLE_SIGNING_IDENTITY="DesktopCleaner Dev" npm run tauri build -- --bundles app
+   ```
+   Tauri signs the `.app` with that identity. Grant Full Disk Access to that build once; later builds signed
+   the same way keep it. Keep the bundle identifier (`com.fawadkhalil.desktopcleaner`) unchanged, since it's
+   part of the requirement too. A self-signed build is for your own Mac only: Gatekeeper still warns
+   elsewhere.
+
+**CI releases: a Developer ID certificate** (Apple Developer Program), which also clears Gatekeeper once
+notarized:
+
+1. Create a **Developer ID Application** certificate in your Apple Developer account, install it, and
+   export it from Keychain Access as a `.p12` with a password.
+2. Add repository secrets: `APPLE_CERTIFICATE` (`base64 -i cert.p12 | pbcopy`), `APPLE_CERTIFICATE_PASSWORD`,
+   `APPLE_SIGNING_IDENTITY` (e.g. `Developer ID Application: Your Name (TEAMID)`), and for notarization
+   `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID`.
+3. Uncomment those variables in the `tauri-action` step of `.github/workflows/ci.yml`. It imports
+   the certificate into a temporary keychain, signs, and notarizes.
+
+Every release signed with the same Developer ID and bundle identifier keeps the permissions users granted
+to the previous one.
 
 ## Support
 
