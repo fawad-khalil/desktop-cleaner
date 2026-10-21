@@ -789,6 +789,7 @@ dependencies = [
  "netstat2",
  "notify",
  "rayon",
+ "regex",
  "rmp-serde",
  "serde",
  "serde_json",

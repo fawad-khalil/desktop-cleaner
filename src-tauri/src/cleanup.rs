@@ -2,6 +2,7 @@
 //! items to the Recycle Bin / Trash; there is no permanent delete.
 
 use crate::safety::{self, Verdict};
+use crate::search::Matcher;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -17,12 +18,18 @@ pub enum Target {
         path: String,
         #[serde(default)]
         min_age_days: Option<u64>,
+        /// Only items whose path matches.
+        #[serde(default)]
+        search: Option<crate::search::Filter>,
     },
     /// Files under `path` not used for `min_age_days` and at least `min_size` bytes.
     OldFiles {
         path: String,
         min_age_days: u64,
         min_size: u64,
+        /// Only files whose path matches.
+        #[serde(default)]
+        search: Option<crate::search::Filter>,
     },
 }
 
@@ -67,7 +74,13 @@ pub fn last_used(md: &fs::Metadata) -> Option<u64> {
 
 /// `cutoff`: only items last used at or before this time (seconds since the
 /// epoch). A folder counts as used when any file inside it was.
-fn contents(root: &Path, cutoff: Option<u64>, out: &mut Vec<Candidate>, refused: &mut Vec<Refusal>) {
+fn contents(
+    root: &Path,
+    cutoff: Option<u64>,
+    search: Option<&Matcher>,
+    out: &mut Vec<Candidate>,
+    refused: &mut Vec<Refusal>,
+) {
     let Ok(rd) = fs::read_dir(root) else { return };
     let source = root.to_string_lossy().into_owned();
     let entries: Vec<_> = rd.flatten().collect();
@@ -75,6 +88,9 @@ fn contents(root: &Path, cutoff: Option<u64>, out: &mut Vec<Candidate>, refused:
         .par_iter()
         .filter_map(|e| {
             let p = e.path();
+            if search.is_some_and(|m| !m.is_match(&p.to_string_lossy())) {
+                return None;
+            }
             let md = fs::symlink_metadata(&p).ok()?;
             if let Verdict::Protected(reason) = safety::check(&p) {
                 return Some(Err(Refusal {
@@ -108,10 +124,12 @@ fn contents(root: &Path, cutoff: Option<u64>, out: &mut Vec<Candidate>, refused:
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn old_files(
     dir: &Path,
     cutoff: u64,
     min_size: u64,
+    search: Option<&Matcher>,
     source: &str,
     out: &mut Vec<Candidate>,
     refused: &mut Vec<Refusal>,
@@ -131,11 +149,14 @@ fn old_files(
             continue; // never descend into protected trees
         }
         if ft.is_dir() {
-            old_files(&p, cutoff, min_size, source, out, refused);
+            old_files(&p, cutoff, min_size, search, source, out, refused);
         } else if ft.is_file() {
             let Ok(md) = e.metadata() else { continue };
             let used = last_used(&md);
-            if md.len() >= min_size && used.is_some_and(|u| u <= cutoff) {
+            if md.len() >= min_size
+                && used.is_some_and(|u| u <= cutoff)
+                && search.is_none_or(|m| m.is_match(&p.to_string_lossy()))
+            {
                 out.push(Candidate {
                     path: p.to_string_lossy().into_owned(),
                     size: md.len(),
@@ -148,28 +169,32 @@ fn old_files(
     }
 }
 
-pub fn preview(targets: Vec<Target>) -> Preview {
+/// Lists what the targets would clean. Fails only on an invalid search pattern.
+pub fn preview(targets: Vec<Target>) -> Result<Preview, String> {
     let now = epoch(SystemTime::now()).unwrap_or(0);
     let mut items = Vec::new();
     let mut refused = Vec::new();
     for t in targets {
         match t {
-            Target::Contents { path, min_age_days } => {
+            Target::Contents { path, min_age_days, search } => {
                 let cutoff = min_age_days.map(|d| now.saturating_sub(d * 86_400));
-                contents(Path::new(&path), cutoff, &mut items, &mut refused)
+                let m = crate::search::matcher(search.as_ref())?;
+                contents(Path::new(&path), cutoff, m.as_ref(), &mut items, &mut refused)
             }
             Target::OldFiles {
                 path,
                 min_age_days,
                 min_size,
+                search,
             } => {
+                let m = crate::search::matcher(search.as_ref())?;
                 let root = PathBuf::from(&path);
                 if let Verdict::Protected(reason) = safety::can_scan(&root) {
                     refused.push(Refusal { path, reason });
                     continue;
                 }
                 let cutoff = now.saturating_sub(min_age_days * 86_400);
-                old_files(&root, cutoff, min_size, &path, &mut items, &mut refused);
+                old_files(&root, cutoff, min_size, m.as_ref(), &path, &mut items, &mut refused);
             }
         }
     }
@@ -181,13 +206,13 @@ pub fn preview(targets: Vec<Target>) -> Preview {
     items.truncate(MAX_ITEMS);
     let protected_count = refused.len();
     refused.truncate(MAX_REFUSALS);
-    Preview {
+    Ok(Preview {
         total: items.iter().map(|c| c.size).sum(),
         items,
         protected: refused,
         protected_count,
         truncated,
-    }
+    })
 }
 
 #[derive(Serialize)]
@@ -252,26 +277,30 @@ mod tests {
         fs::write(root.join("cache/sub/b.bin"), vec![0u8; 20]).unwrap();
 
         let cache = root.join("cache").to_string_lossy().into_owned();
-        let p = preview(vec![Target::Contents { path: cache.clone(), min_age_days: None }]);
+        let contents = |min_age_days, search| Target::Contents { path: cache.clone(), min_age_days, search };
+        let old = |min_age_days, min_size, search| Target::OldFiles {
+            path: root.to_string_lossy().into_owned(),
+            min_age_days,
+            min_size,
+            search,
+        };
+        let p = preview(vec![contents(None, None)]).unwrap();
         assert_eq!(p.items.len(), 2);
         assert_eq!(p.total, 30);
         // Just written, so nothing in the cache counts as unused for 7 days.
-        let p = preview(vec![Target::Contents { path: cache, min_age_days: Some(7) }]);
-        assert!(p.items.is_empty());
+        assert!(preview(vec![contents(Some(7), None)]).unwrap().items.is_empty());
 
         // Freshly written files are not "old".
-        let p = preview(vec![Target::OldFiles {
-            path: root.to_string_lossy().into_owned(),
-            min_age_days: 30,
-            min_size: 0,
-        }]);
-        assert!(p.items.is_empty());
-        let p = preview(vec![Target::OldFiles {
-            path: root.to_string_lossy().into_owned(),
-            min_age_days: 0,
-            min_size: 15,
-        }]);
+        assert!(preview(vec![old(30, 0, None)]).unwrap().items.is_empty());
+        assert_eq!(preview(vec![old(0, 15, None)]).unwrap().items.len(), 1);
+
+        // Search narrows what's listed; an invalid regex is an error.
+        let re = |p: &str| Some(crate::search::Filter { pattern: p.into(), regex: true, case_sensitive: false });
+        let p = preview(vec![contents(None, re(r"a\.BIN$"))]).unwrap();
         assert_eq!(p.items.len(), 1);
+        assert!(p.items[0].path.ends_with("a.bin"));
+        assert_eq!(preview(vec![old(0, 0, re(r"sub[/\\]"))]).unwrap().items.len(), 1);
+        assert!(preview(vec![old(0, 0, re("(bad"))]).is_err());
 
         assert!(root.join("cache/a.bin").exists());
         fs::remove_dir_all(&root).unwrap();
