@@ -5,6 +5,8 @@
   import Pie, { type Slice } from "../Pie.svelte";
   import StorageBar, { type Segment } from "../StorageBar.svelte";
   import Sunburst from "../Sunburst.svelte";
+  import SearchBox from "../SearchBox.svelte";
+  import { emptySearch, forBackend, matcher } from "../search";
 
   const isMac = navigator.userAgent.includes("Mac");
 
@@ -23,6 +25,13 @@
   let clock = $state(Date.now());
 
   let filesTitle = $state("");
+  /** Which files the panel lists, so a search can re-run it. */
+  let filesQuery = $state<{ category: string | null; age: number | null }>({ category: null, age: null });
+  /** Search over all files below the folder (backend, Rust regex). */
+  let fileSearch = $state(emptySearch());
+  let fileSearchError = $state("");
+  /** Filter for this folder's table. */
+  let entrySearch = $state(emptySearch());
   let files = $state<FileItem[] | null>(null);
   let filesLoading = $state(false);
 
@@ -154,16 +163,35 @@
   async function showFiles(title: string, category: string | null, age: number | null) {
     if (!scan) return;
     filesTitle = title;
+    filesQuery = { category, age };
     filesLoading = true;
     files = null;
     try {
-      files = await api.largestFiles(scan.path, category, age, 100);
+      files = await api.largestFiles(scan.path, category, age, 100, forBackend(fileSearch));
     } catch (e) {
       error = String(e);
     } finally {
       filesLoading = false;
     }
   }
+
+  // Re-run the file list when the search changes (debounced); the backend
+  // reports invalid patterns.
+  $effect(() => {
+    const f = { ...fileSearch };
+    const t = setTimeout(async () => {
+      fileSearchError = f.pattern ? ((await api.checkSearch(f).catch(() => null)) ?? "") : "";
+      if (!fileSearchError && filesTitle) showFiles(filesTitle, filesQuery.category, filesQuery.age);
+    }, 400);
+    return () => clearTimeout(t);
+  });
+
+  function findFiles() {
+    if (fileSearch.pattern && !fileSearchError) showFiles(`Files matching “${fileSearch.pattern}”`, null, null);
+  }
+
+  const entryMatch = $derived(matcher(entrySearch));
+  const shownEntries = $derived((scan?.entries ?? []).filter((e) => !entryMatch.test || entryMatch.test(e.path)));
 
   const typeSlices = $derived<Slice[]>(
     (scan?.types ?? []).map((t) => ({ label: t.category, value: t.size, key: t.category, color: typeColors[t.category] })),
@@ -274,10 +302,18 @@
     </div>
   </div>
 
+  <div class="card">
+    <div class="toolbar find">
+      <strong>Find files in {folderName}</strong>
+      <SearchBox bind:filter={fileSearch} placeholder="Name or path, e.g. .mov or \.(iso|dmg)$ with .*" error={fileSearchError} />
+      <button onclick={findFiles} disabled={!fileSearch.pattern || !!fileSearchError}>Find largest matches</button>
+    </div>
+    {#if !filesTitle}
+      <p class="note">Searches every file below this folder. Clicking a slice in the type or last-used chart also lists files, narrowed by this search.</p>
+    {/if}
   {#if filesTitle}
-    <div class="card">
       <div class="row">
-        <strong>{filesTitle}</strong>
+        <strong>{filesTitle}{fileSearch.pattern && !filesTitle.startsWith("Files matching") ? ` matching “${fileSearch.pattern}”` : ""}</strong>
         <button class="link" onclick={() => { filesTitle = ""; files = null; }}>Close</button>
       </div>
       {#if filesLoading}
@@ -288,18 +324,23 @@
           <tbody>
             {#each files as f}
               <tr><td><code class="path">{f.path}</code></td><td class="num">{ago(f.last_used)}</td><td class="num">{bytes(f.size)}</td></tr>
+            {:else}
+              <tr><td colspan="3" class="muted">No files match.</td></tr>
             {/each}
           </tbody>
         </table>
       {/if}
-    </div>
   {/if}
+  </div>
 
   <div class="card">
+    <div class="toolbar">
+      <SearchBox bind:filter={entrySearch} placeholder="Filter this folder…" error={entryMatch.error} count={shownEntries.length} />
+    </div>
     <table>
       <thead><tr><th>Name</th><th class="num">Size</th><th class="num">Files</th><th class="num">Share</th></tr></thead>
       <tbody>
-        {#each scan.entries.slice(0, 200) as e}
+        {#each shownEntries.slice(0, 200) as e}
           <tr>
             <td>
               {#if e.is_dir}
@@ -311,7 +352,7 @@
             <td class="num">{pct(e.size, scan.total)}</td>
           </tr>
         {/each}
-        {#if smaller > 0}
+        {#if smaller > 0 && !entrySearch.pattern}
           <tr class="muted"><td>Smaller items (under 1 MB each)</td><td class="num">{bytes(smaller)}</td><td></td><td class="num">{pct(smaller, scan.total)}</td></tr>
         {/if}
       </tbody>
@@ -330,4 +371,5 @@
   h3 { margin: 0 0 12px; font-size: 14px; color: var(--muted); font-weight: 600; }
   .hint { border-left: 4px solid var(--warn); font-size: 13px; }
   .small { font-size: 12px; }
+  .find { margin-bottom: 4px; }
 </style>

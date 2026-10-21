@@ -7,6 +7,8 @@
   } from "../api";
   import { ago, bytes } from "../format";
   import CleanedStats from "../CleanedStats.svelte";
+  import SearchBox from "../SearchBox.svelte";
+  import { emptySearch, forBackend, matcher } from "../search";
   import { refreshCleaningStats } from "../stats.svelte";
 
   let caches = $state<CacheInfo[] | null>(null);
@@ -18,6 +20,12 @@
   /** Only clean cache items unused for this many days (0 = everything). */
   let cacheAge = $state(0);
   let oldEnabled = $state(false);
+  /** Searches: cache/temp locations, old files (run on the backend), leftovers, review list. */
+  let cacheSearch = $state(emptySearch());
+  let oldSearch = $state(emptySearch());
+  let oldSearchError = $state("");
+  let leftoverSearch = $state(emptySearch());
+  let reviewSearch = $state(emptySearch());
   let oldPath = $state("");
   let minAge = $state(180);
   let minSize = $state(10 * 1024 * 1024);
@@ -49,10 +57,36 @@
   }
 
   const isTemp = (c: CacheInfo) => c.group === "System temp" || c.group === "Logs";
+  const cacheMatch = $derived(matcher(cacheSearch));
+  const shownCaches = $derived((caches ?? []).filter((c) => !cacheMatch.test || cacheMatch.test(`${c.name} ${c.path}`)));
   const sections = $derived([
-    { title: "Caches", blurb: "Browser, app and developer-tool caches. Apps rebuild them when needed.", items: (caches ?? []).filter((c) => !isTemp(c)) },
-    { title: "Temporary files & logs", blurb: "Temp folders, crash reports and logs that are safe to clear.", items: (caches ?? []).filter(isTemp) },
+    { title: "Caches", blurb: "Browser, app and developer-tool caches. Apps rebuild them when needed.", items: shownCaches.filter((c) => !isTemp(c)) },
+    { title: "Temporary files & logs", blurb: "Temp folders, crash reports and logs that are safe to clear.", items: shownCaches.filter(isTemp) },
   ]);
+
+  // Old-file search runs on the backend (Rust regex), so ask it about errors.
+  $effect(() => {
+    const f = { ...oldSearch };
+    if (!f.pattern) {
+      oldSearchError = "";
+      return;
+    }
+    const t = setTimeout(() => api.checkSearch(f).then((e) => (oldSearchError = e ?? "")).catch(() => {}), 250);
+    return () => clearTimeout(t);
+  });
+
+  const leftoverMatch = $derived(matcher(leftoverSearch));
+  const shownLeftovers = $derived(
+    (leftovers ?? []).filter((l) => !leftoverMatch.test || leftoverMatch.test([l.title, l.description, ...l.paths].join(" "))),
+  );
+
+  const reviewMatch = $derived(matcher(reviewSearch));
+  const shownItems = $derived((preview?.items ?? []).filter((i) => !reviewMatch.test || reviewMatch.test(i.path)));
+  function selectMatching(on: boolean) {
+    const s = new Set(selected);
+    for (const i of shownItems) on ? s.add(i.path) : s.delete(i.path);
+    selected = s;
+  }
 
   type TriState = "all" | "some" | "none";
   function groupState(items: CacheInfo[]): TriState {
@@ -75,7 +109,7 @@
     oldEnabled = on;
   }
 
-  const anySelected = $derived(picked.size > 0 || pickedLeftovers.size > 0 || (oldEnabled && !!oldPath));
+  const anySelected = $derived(picked.size > 0 || pickedLeftovers.size > 0 || (oldEnabled && !!oldPath && !oldSearchError));
   const selectionSummary = $derived.by(() => {
     const parts: string[] = [];
     const sel = (caches ?? []).filter((c) => picked.has(c.path));
@@ -122,7 +156,7 @@
       ...[...pickedLeftovers].map((path): Target => ({ kind: "contents", path })),
     ];
     if (oldEnabled && oldPath)
-      targets.push({ kind: "old_files", path: oldPath, min_age_days: minAge, min_size: minSize });
+      targets.push({ kind: "old_files", path: oldPath, min_age_days: minAge, min_size: minSize, search: forBackend(oldSearch) });
     if (!targets.length) return;
     busy = "Building preview (nothing is deleted)…";
     error = "";
@@ -210,6 +244,12 @@
       <option value={365}>1 year</option>
     </select>
   </div>
+  <div class="toolbar">
+    <SearchBox bind:filter={cacheSearch} placeholder="Find caches and temp locations…" error={cacheMatch.error}
+      count={shownCaches.length}
+      onselect={() => setPaths(shownCaches.map((c) => c.path), true)}
+      onunselect={() => setPaths(shownCaches.map((c) => c.path), false)} />
+  </div>
 
   {#if !caches}
     <p class="muted">Measuring caches…</p>
@@ -268,7 +308,11 @@
         <option value={1024 * 1024 * 1024}>1 GB</option>
       </select>
     </div>
-    <p class="note item">"Used" means the later of last opened and last changed.</p>
+    <div class="toolbar item">
+      <span class="muted">Only files matching</span>
+      <SearchBox bind:filter={oldSearch} placeholder="e.g. .dmg or \.(zip|iso)$ with .*" error={oldSearchError} />
+    </div>
+    <p class="note item">"Used" means the later of last opened and last changed. The search matches the file's full path.</p>
   </div>
 
   <div class="toolbar actions">
@@ -286,7 +330,13 @@
   {:else if !leftovers.length}
     <p class="muted">No update leftovers found.</p>
   {:else}
-    {#each leftovers as l}
+    <div class="toolbar">
+      <SearchBox bind:filter={leftoverSearch} placeholder="Find leftovers…" error={leftoverMatch.error}
+        count={shownLeftovers.length}
+        onselect={() => togglePaths(shownLeftovers.filter((l) => l.action === "trash").flatMap((l) => l.paths), true)}
+        onunselect={() => togglePaths(shownLeftovers.flatMap((l) => l.paths), false)} />
+    </div>
+    {#each shownLeftovers as l}
       <div class="leftover">
         <div class="lhead">
           {#if l.action === "trash"}
@@ -338,6 +388,10 @@
         Move {selected.size} selected ({bytes(selectedSize)}) to {trashName}
       </button>
     </div>
+    <div class="toolbar">
+      <SearchBox bind:filter={reviewSearch} placeholder="Find in this list…" error={reviewMatch.error}
+        count={shownItems.length} onselect={() => selectMatching(true)} onunselect={() => selectMatching(false)} />
+    </div>
     {#if preview.protected_count}
       <p class="muted">
         🛡 {preview.protected_count} protected item(s) were excluded.
@@ -352,7 +406,7 @@
     <table>
       <thead><tr><th></th><th>Item</th><th class="num">Last used</th><th class="num">Size</th></tr></thead>
       <tbody>
-        {#each preview.items.slice(0, 1000) as i (i.path)}
+        {#each shownItems.slice(0, 1000) as i (i.path)}
           <tr>
             <td><input type="checkbox" checked={selected.has(i.path)} onchange={() => (selected = toggle(selected, i.path))} /></td>
             <td><code class="path">{i.is_dir ? "📁" : "📄"} {i.path}</code></td>
@@ -362,7 +416,7 @@
         {/each}
       </tbody>
     </table>
-    {#if preview.items.length > 1000}<p class="muted">…and {preview.items.length - 1000} more (all included in the selection).</p>{/if}
+    {#if shownItems.length > 1000}<p class="muted">…and {shownItems.length - 1000} more not shown (Select matching includes them).</p>{/if}
   </div>
 {/if}
 

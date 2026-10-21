@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { SearchFilter } from "./search";
 
 export interface DriveInfo {
   name: string;
@@ -132,8 +133,10 @@ export const api = {
   /** Files counted so far by the scan in progress. */
   scanProgress: () => invoke<number>("scan_progress"),
   openFullDiskAccess: () => invoke<void>("open_full_disk_access"),
-  largestFiles: (path: string, category: string | null, age: number | null, limit = 100) =>
-    invoke<FileItem[]>("largest_files", { path, category, age, limit }),
+  largestFiles: (path: string, category: string | null, age: number | null, limit = 100, search: SearchFilter | null = null) =>
+    invoke<FileItem[]>("largest_files", { path, category, age, limit, search }),
+  /** Why a search pattern is invalid for the backend (Rust regex syntax), or null. */
+  checkSearch: (filter: SearchFilter) => invoke<string | null>("check_search", { filter }),
   listProcesses: () => invoke<ProcSnapshot>("list_processes"),
   /** Asks processes to quit normally; the backend refuses system ones. */
   quitProcesses: (pids: number[]) => invoke<number>("quit_processes", { pids }),
@@ -146,8 +149,8 @@ export const api = {
 
 export type Target =
   /** With `min_age_days`, only items nothing inside has been used for that long. */
-  | { kind: "contents"; path: string; min_age_days?: number }
-  | { kind: "old_files"; path: string; min_age_days: number; min_size: number };
+  | { kind: "contents"; path: string; min_age_days?: number; search?: SearchFilter | null }
+  | { kind: "old_files"; path: string; min_age_days: number; min_size: number; search?: SearchFilter | null };
 
 export interface Candidate {
   path: string;
