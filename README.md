@@ -126,3 +126,7 @@ With `"targets": "all"`, Tauri's defaults are `bundle/msi` and `bundle/nsis` on 
   When running with `npm run tauri dev`, the permission applies to the terminal app that launched it.
 - **Formatting drives** (Windows and Linux) always goes through the OS elevation prompt (UAC on Windows,
   pkexec on Linux); nothing is formatted if you decline. The app itself never runs as administrator/root.
+
+## License
+
+[MIT](LICENSE) © 2026 Fawad Khalil
