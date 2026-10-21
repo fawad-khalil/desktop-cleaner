@@ -20,6 +20,8 @@
     tx: number;
     rxRate: number;
     txRate: number;
+    /** Watts, when the OS reports energy (macOS, own processes). */
+    power: number | null;
     canQuit: boolean;
     impact: Level;
     /** Who launched it: the parents of its top-level processes. */
@@ -32,7 +34,7 @@
   let error = $state("");
   let notice = $state("");
   let view = $state<"simple" | "advanced">("simple");
-  let sortKey = $state<"impact" | "memory" | "cpu" | "net" | "name">("impact");
+  let sortKey = $state<"impact" | "memory" | "cpu" | "power" | "net" | "name">("impact");
   let filter = $state("");
   let showSystem = $state(false);
   let expanded = $state<Set<string>>(new Set());
@@ -107,6 +109,8 @@
     return { roots, tree };
   }
 
+  const hasPower = $derived(!!snap?.processes.some((p) => p.power_w != null));
+
   const byPid = $derived(new Map((snap?.processes ?? []).map((p) => [p.pid, p])));
 
   const groups = $derived.by(() => {
@@ -116,7 +120,7 @@
       const key = `${p.kind}:${p.app}`;
       let g = m.get(key);
       if (!g) {
-        g = { key, name: p.app, kind: p.kind, procs: [], memory: 0, cpu: 0, connections: 0, rx: 0, tx: 0, rxRate: 0, txRate: 0, canQuit: true, impact: "Low", startedBy: [], tree: [] };
+        g = { key, name: p.app, kind: p.kind, procs: [], memory: 0, cpu: 0, connections: 0, rx: 0, tx: 0, rxRate: 0, txRate: 0, power: null, canQuit: true, impact: "Low", startedBy: [], tree: [] };
         m.set(key, g);
       }
       g.procs.push(p);
@@ -127,6 +131,7 @@
       g.tx += p.net_tx ?? 0;
       g.rxRate += p.net_rx_rate ?? 0;
       g.txRate += p.net_tx_rate ?? 0;
+      if (p.power_w != null) g.power = (g.power ?? 0) + p.power_w;
       g.canQuit &&= p.mine && p.kind !== "system";
     }
     for (const g of m.values()) {
@@ -147,6 +152,7 @@
       impact: (a: AppGroup, b: AppGroup) => rank[b.impact] - rank[a.impact] || b.memory - a.memory,
       memory: (a: AppGroup, b: AppGroup) => b.memory - a.memory,
       cpu: (a: AppGroup, b: AppGroup) => b.cpu - a.cpu,
+      power: (a: AppGroup, b: AppGroup) => (b.power ?? -1) - (a.power ?? -1),
       net: (a: AppGroup, b: AppGroup) => b.rxRate + b.txRate - (a.rxRate + a.txRate) || b.rx + b.tx - (a.rx + a.tx) || b.connections - a.connections,
       name: (a: AppGroup, b: AppGroup) => a.name.localeCompare(b.name),
     }[sortKey];
@@ -288,6 +294,7 @@
         <option value="impact">Impact</option>
         <option value="memory">Memory</option>
         <option value="cpu">Processor</option>
+        {#if hasPower}<option value="power">Power</option>{/if}
         <option value="net">Internet</option>
         <option value="name">Name</option>
       </select>
@@ -311,7 +318,7 @@
         {:else}
           <table class="apps">
             <thead>
-              <tr><th>Name</th><th>Started by</th><th>Impact</th><th>Memory</th><th>Processor</th><th title="Download ↓ and upload ↑ speed now; total since it started below">Internet</th><th></th></tr>
+              <tr><th>Name</th><th>Started by</th><th>Impact</th><th>Memory</th><th>Processor</th>{#if hasPower}<th title="Average power over the last refresh">Power</th>{/if}<th title="Download ↓ and upload ↑ speed now; total since it started below">Internet</th><th></th></tr>
             </thead>
             <tbody>
               {#each showAll.has(sec.kind) || filter ? sec.items : sec.items.slice(0, LIMIT) as g (g.key)}
@@ -332,6 +339,7 @@
                     <div class="bar thin"><div style:width={pct(g.memory, snap.total_memory)}></div></div>
                   </td>
                   <td><span class="lvl {cpuLevel(g.cpu).toLowerCase()}">{cpuLevel(g.cpu)}</span> <span class="muted small">{g.cpu.toFixed(1)}%</span></td>
+                  {#if hasPower}<td class="small">{g.power == null ? "—" : `${g.power.toFixed(g.power < 10 ? 2 : 1)} W`}</td>{/if}
                   <td>{@render net(g.rxRate, g.txRate, g.rx, g.tx, g.connections)}</td>
                   <td class="num">
                     {#if g.canQuit}<button onclick={() => quit(g)}>Quit</button>{/if}
@@ -346,6 +354,7 @@
                       <td></td>
                       <td>{mem(p.memory)}</td>
                       <td class="muted">{p.cpu.toFixed(1)}%</td>
+                      {#if hasPower}<td class="muted">{p.power_w == null ? "—" : `${p.power_w.toFixed(2)} W`}</td>{/if}
                       <td>{@render net(p.net_rx_rate ?? 0, p.net_tx_rate ?? 0, p.net_rx ?? 0, p.net_tx ?? 0, p.connections)}</td>
                       <td></td>
                     </tr>

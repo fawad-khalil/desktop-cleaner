@@ -76,6 +76,8 @@ export interface ProcInfo {
   net_tx: number | null;
   net_rx_rate: number | null;
   net_tx_rate: number | null;
+  /** Average power over the last refresh in watts (macOS, own processes). */
+  power_w: number | null;
 }
 
 export interface ProcSnapshot {
@@ -218,4 +220,32 @@ export const formatApi = {
   /** Permanently erases the volume. The backend re-checks everything. */
   format: (mountPoint: string, fileSystem: string, label: string, confirm: string) =>
     invoke<void>("format_volume", { mountPoint, fileSystem, label, confirm }),
+};
+
+export interface Sensor { label: string; celsius: number }
+export interface Health {
+  temps: { cpu: Sensor[]; gpu: Sensor[]; storage: Sensor[]; battery: Sensor[]; ram: Sensor[]; other: Sensor[]; note: string | null };
+  fans: { fans: { index: number; rpm: number; min_rpm: number | null; max_rpm: number | null }[]; note: string | null };
+  gpu: { name: string | null; utilization: number | null; note: string | null };
+  battery: {
+    percent: number | null; charging: boolean; plugged_in: boolean; fully_charged: boolean;
+    cycles: number | null; design_cycles: number | null; design_mah: number | null; max_mah: number | null;
+    health_pct: number | null; condition: string | null; temp_c: number | null; voltage_v: number | null;
+    current_a: number | null; power_w: number | null; minutes_to_empty: number | null; minutes_to_full: number | null;
+  } | null;
+  battery_note: string | null;
+  power: {
+    adapter_connected: boolean; adapter_name: string | null; adapter_watts: number | null;
+    adapter_voltage_v: number | null; adapter_current_a: number | null; system_power_w: number | null; note: string | null;
+  };
+  storage: { name: string; smart_status: string | null; temp_c: number | null; wear_pct: number | null; data_written_bytes: number | null; power_on_hours: number | null; note: string | null }[];
+  storage_note: string | null;
+  ram_temp_note: string | null;
+  history: { day: number; health_pct: number; max_mah: number; design_mah: number; cycles: number }[];
+  projection: { date_80: number | null; cycles_80: number | null; basis: string } | null;
+  drain: { at: number; percent: number; power_w: number }[];
+}
+
+export const healthApi = {
+  get: () => invoke<Health>("get_health"),
 };

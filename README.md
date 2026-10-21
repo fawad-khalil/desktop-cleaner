@@ -18,6 +18,12 @@ Rust + Tauri v2 and a SvelteKit (TypeScript) frontend.
 - **Apps**: installed apps with size and last-used date, multi-column sorting, and Remove (to the Trash on
   macOS, the app's uninstaller on Windows, the package-manager command on Linux).
 - **Recommendations**: rule-based suggestions linking to the tab that acts on them.
+- **Health**: CPU/GPU/storage temperatures, fans, GPU load, battery health, cycles, condition and power,
+  power adapter and system draw, SMART status, per-app power use, a daily battery-health trend with an
+  estimate of when it reaches 80%, and a drain estimate. Anything the OS doesn't expose without admin rights
+  is shown as not available, with the reason.
+- **Search**: every cleaning list has a search box (plain text or regex, optional case-sensitivity) with
+  Select matching; Old files and Disk "Find files" search every file on the backend.
 - **Drives**: volumes; format non-system drives (Windows and Linux).
 
 ## Safety
