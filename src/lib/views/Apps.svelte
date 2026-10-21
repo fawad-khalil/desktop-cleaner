@@ -3,6 +3,8 @@
   import { api, type AppInfo, type AppLeftover, type RemoveOutcome } from "../api";
   import { ago, bytes } from "../format";
   import { refreshCleaningStats } from "../stats.svelte";
+  import SearchBox from "../SearchBox.svelte";
+  import { emptySearch, matcher } from "../search";
 
   type Col = "name" | "publisher" | "version" | "size" | "last_used";
   interface SortKey {
@@ -15,7 +17,8 @@
 
   let apps = $state<AppInfo[] | null>(null);
   let error = $state("");
-  let filter = $state("");
+  let search = $state(emptySearch());
+  const match = $derived(matcher(search));
   /** Sort keys in priority order; shift-click a header to add one. */
   let sort = $state<SortKey[]>([{ col: "size", dir: -1 }]);
 
@@ -65,9 +68,8 @@
   }
 
   const rows = $derived.by(() => {
-    const f = filter.toLowerCase();
     const list = (apps ?? []).filter(
-      (a) => !f || a.name.toLowerCase().includes(f) || (a.publisher ?? "").toLowerCase().includes(f),
+      (a) => !match.test || match.test([a.name, a.publisher ?? "", a.location ?? ""].join(" ")),
     );
     return [...list].sort((a, b) => {
       for (const k of sort) {
@@ -185,7 +187,7 @@
 {#if apps}
   <div class="toolbar">
     <strong>{apps.length}</strong><span class="muted">apps · {bytes(total)} reported</span>
-    <input placeholder="Filter…" bind:value={filter} />
+    <SearchBox bind:filter={search} placeholder="Search name, publisher or location…" error={match.error} count={rows.length} />
     {#if sort.length > 1}
       <button class="link" onclick={() => (sort = [sort[0]])}>Clear extra sorting</button>
     {/if}

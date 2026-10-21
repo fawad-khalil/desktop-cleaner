@@ -18,6 +18,8 @@ pub struct Inner {
     last: Instant,
     /// Per-process traffic, filled by a background reader (macOS only).
     traffic: Option<Traffic>,
+    /// Last energy reading per pid (nanojoules, when), for power in watts.
+    energy: HashMap<u32, (u64, Instant)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -75,6 +77,22 @@ fn start_traffic() -> Option<Traffic> {
     Some(map)
 }
 
+/// Energy the OS has billed to a process, in nanojoules (macOS; only for
+/// processes of the same user).
+#[cfg(target_os = "macos")]
+fn billed_energy(pid: u32) -> Option<u64> {
+    let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+    let r = unsafe {
+        libc::proc_pid_rusage(pid as i32, libc::RUSAGE_INFO_V4, &mut info as *mut _ as *mut libc::rusage_info_t)
+    };
+    (r == 0).then_some(info.ri_billed_energy)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn billed_energy(_pid: u32) -> Option<u64> {
+    None
+}
+
 /// "Google Chrome H.1234,5678,910," → (1234, 5678, 910). A leading
 /// timestamp column, as in streaming mode, is skipped.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -105,6 +123,7 @@ impl ProcState {
             nets: Networks::new_with_refreshed_list(),
             last: Instant::now(),
             traffic: None,
+            energy: HashMap::new(),
         }))
     }
 }
@@ -138,6 +157,8 @@ pub struct ProcInfo {
     pub net_tx: Option<u64>,
     pub net_rx_rate: Option<f64>,
     pub net_tx_rate: Option<f64>,
+    /// Average power over the last refresh in watts (macOS, own processes).
+    pub power_w: Option<f64>,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -383,7 +404,9 @@ fn socket_counts() -> Option<HashMap<u32, (u32, u32)>> {
 pub fn snapshot(state: &ProcState) -> ProcSnapshot {
     let sockets = socket_counts();
     let mut g = state.0.lock().unwrap();
-    let Inner { sys, nets, last, traffic } = &mut *g;
+    let Inner { sys, nets, last, traffic, energy } = &mut *g;
+    let now_i = Instant::now();
+    let mut seen_energy = HashMap::new();
     if traffic.is_none() {
         *traffic = start_traffic();
     }
@@ -436,9 +459,16 @@ pub fn snapshot(state: &ProcState) -> ProcSnapshot {
                 net_tx: traffic.as_ref().map(|_| counters.get(&pid).map_or(0, |c| c.tx)),
                 net_rx_rate: traffic.as_ref().map(|_| counters.get(&pid).map_or(0.0, |c| c.rx_rate)),
                 net_tx_rate: traffic.as_ref().map(|_| counters.get(&pid).map_or(0.0, |c| c.tx_rate)),
+                power_w: billed_energy(pid).and_then(|nj| {
+                    seen_energy.insert(pid, (nj, now_i));
+                    let (prev, at) = energy.get(&pid)?;
+                    let dt = now_i.duration_since(*at).as_secs_f64();
+                    (dt > 0.2).then(|| nj.saturating_sub(*prev) as f64 / 1e9 / dt)
+                }),
             }
         })
         .collect();
+    *energy = seen_energy;
     ProcSnapshot {
         processes,
         total_memory: sys.total_memory(),
@@ -476,6 +506,9 @@ mod tests {
             let snap = snapshot(&st);
             assert!(snap.net_per_process);
             assert!(snap.processes.iter().any(|p| p.net_rx.unwrap_or(0) > 0), "no per-process traffic seen");
+            // Energy is readable for our own processes, so power follows on the second snapshot.
+            let me = snap.processes.iter().find(|p| p.pid == std::process::id()).unwrap();
+            assert!(me.power_w.is_some_and(|w| w >= 0.0), "no power reading for this process");
         }
         if std::env::var_os("SHOW_PROCS").is_some() {
             let mut v: Vec<_> = snap.processes.iter().map(|p| (format!("{:?}", p.kind), p.app.clone(), p.name.clone())).collect();

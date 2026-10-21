@@ -297,9 +297,15 @@ pub struct FileItem {
 }
 
 /// The `limit` largest files under `path`, optionally filtered by type
-/// category and/or last-used bucket.
-pub fn largest_files(path: &str, category: Option<&str>, age: Option<usize>, limit: usize) -> Vec<FileItem> {
-    fn go(dir: &Path, category: Option<&str>, age: Option<usize>, limit: usize) -> Vec<FileItem> {
+/// category, last-used bucket and/or a name/path search.
+pub fn largest_files(
+    path: &str,
+    category: Option<&str>,
+    age: Option<usize>,
+    limit: usize,
+    search: Option<&crate::search::Matcher>,
+) -> Vec<FileItem> {
+    fn go(dir: &Path, category: Option<&str>, age: Option<usize>, limit: usize, search: Option<&crate::search::Matcher>) -> Vec<FileItem> {
         let Ok(rd) = fs::read_dir(dir) else { return Vec::new() };
         let mut subdirs = Vec::new();
         let mut out = Vec::new();
@@ -315,6 +321,9 @@ pub fn largest_files(path: &str, category: Option<&str>, age: Option<usize>, lim
                 if category.is_some_and(|c| c != category_for(&p)) {
                     continue;
                 }
+                if search.is_some_and(|m| !m.is_match(&p.to_string_lossy())) {
+                    continue;
+                }
                 let Ok(md) = ent.metadata() else { continue };
                 if age.is_some_and(|a| a != age_bucket(&md)) {
                     continue;
@@ -328,7 +337,7 @@ pub fn largest_files(path: &str, category: Option<&str>, age: Option<usize>, lim
         }
         let mut all = subdirs
             .par_iter()
-            .map(|d| go(d, category, age, limit))
+            .map(|d| go(d, category, age, limit, search))
             .reduce(Vec::new, |mut a, b| {
                 a.extend(b);
                 a
@@ -338,5 +347,5 @@ pub fn largest_files(path: &str, category: Option<&str>, age: Option<usize>, lim
         all.truncate(limit);
         all
     }
-    go(Path::new(path), category, age, limit)
+    go(Path::new(path), category, age, limit, search)
 }

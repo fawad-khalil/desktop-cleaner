@@ -3,10 +3,12 @@ mod caches;
 mod cleanup;
 mod disk;
 mod format;
+mod health;
 mod index;
 mod leftovers;
 mod processes;
 mod safety;
+mod search;
 mod stats;
 mod uninstall;
 mod watch;
@@ -67,11 +69,19 @@ async fn largest_files(
     category: Option<String>,
     age: Option<usize>,
     limit: Option<usize>,
+    search: Option<search::Filter>,
 ) -> Result<Vec<disk::FileItem>, String> {
+    let m = search::matcher(search.as_ref())?;
     blocking(move || {
-        Ok(disk::largest_files(&path, category.as_deref(), age, limit.unwrap_or(100)))
+        Ok(disk::largest_files(&path, category.as_deref(), age, limit.unwrap_or(100), m.as_ref()))
     })
     .await
+}
+
+/// Why a search pattern is invalid, or null when it's fine.
+#[tauri::command]
+fn check_search(filter: search::Filter) -> Option<String> {
+    search::check(&filter)
 }
 
 #[tauri::command]
@@ -116,7 +126,7 @@ async fn remove_app(target: String, leftovers: Vec<String>) -> Result<uninstall:
 
 #[tauri::command]
 async fn cleanup_preview(targets: Vec<cleanup::Target>) -> Result<cleanup::Preview, String> {
-    blocking(move || Ok(cleanup::preview(targets))).await
+    blocking(move || cleanup::preview(targets).map_err(anyhow::Error::msg)).await
 }
 
 /// Moves items to the Recycle Bin / Trash. Each path is re-validated.
@@ -128,6 +138,12 @@ async fn cleanup_execute(paths: Vec<String>) -> Result<cleanup::CleanResult, Str
         Ok(r)
     })
     .await
+}
+
+/// Temperatures, fans, GPU, battery, adapter and storage health.
+#[tauri::command]
+async fn get_health() -> Result<health::Health, String> {
+    blocking(|| Ok(health::read(&health::STATE))).await
 }
 
 /// Space freed this session and all time, with recent cleanups.
@@ -186,6 +202,7 @@ pub fn run() {
             }
             if let Ok(dir) = app.path().app_local_data_dir() {
                 stats::set_file(dir.join("cleaning-stats.json"));
+                health::STATE.set_history_file(dir.join("battery-history.json"));
             }
             let handle = app.handle().clone();
             watch::start(move |root| {
@@ -200,6 +217,7 @@ pub fn run() {
             refresh_index,
             open_full_disk_access,
             largest_files,
+            check_search,
             list_processes,
             quit_processes,
             list_caches,
@@ -209,6 +227,7 @@ pub fn run() {
             cleanup_preview,
             cleanup_execute,
             cleaning_stats,
+            get_health,
             check_path,
             find_leftovers,
             open_system_cleanup,

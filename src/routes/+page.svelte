@@ -6,6 +6,7 @@
   import Apps from "$lib/views/Apps.svelte";
   import Recommendations from "$lib/views/Recommendations.svelte";
   import Drives from "$lib/views/Drives.svelte";
+  import Health from "$lib/views/Health.svelte";
   import { nav, type TabId } from "$lib/nav.svelte";
   import { cleaning, refreshCleaningStats } from "$lib/stats.svelte";
   import { bytes } from "$lib/format";
@@ -18,12 +19,14 @@
     { id: "caches", label: "Caches", icon: "◫", view: Caches },
     { id: "apps", label: "Apps", icon: "▦", view: Apps },
     { id: "recommendations", label: "Recommendations", icon: "★", view: Recommendations },
+    { id: "health", label: "Health", icon: "♥", view: Health },
     { id: "drives", label: "Drives", icon: "⛁", view: Drives },
   ] as const satisfies readonly { id: TabId; label: string; icon: string; view: unknown }[];
 
   const active = $derived(nav.tab);
   // Views stay mounted after first visit so scans aren't lost when switching
-  // tabs. Processes is the exception: it polls, so it only lives while shown.
+  // tabs. Processes and Health are the exception: they poll, so they only
+  // live while shown.
   let visited = $state<Set<TabId>>(new Set(["disk"]));
 
   $effect(() => {
@@ -56,7 +59,7 @@
   </nav>
   <main>
     {#each tabs as t}
-      {#if active === t.id || (visited.has(t.id) && t.id !== "processes")}
+      {#if active === t.id || (visited.has(t.id) && t.id !== "processes" && t.id !== "health")}
         <section hidden={active !== t.id}>
           <t.view />
         </section>
