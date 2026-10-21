@@ -3,6 +3,7 @@ mod caches;
 mod cleanup;
 mod disk;
 mod format;
+mod health;
 mod index;
 mod leftovers;
 mod processes;
@@ -139,6 +140,12 @@ async fn cleanup_execute(paths: Vec<String>) -> Result<cleanup::CleanResult, Str
     .await
 }
 
+/// Temperatures, fans, GPU, battery, adapter and storage health.
+#[tauri::command]
+async fn get_health() -> Result<health::Health, String> {
+    blocking(|| Ok(health::read(&health::STATE))).await
+}
+
 /// Space freed this session and all time, with recent cleanups.
 #[tauri::command]
 fn cleaning_stats() -> stats::Summary {
@@ -195,6 +202,7 @@ pub fn run() {
             }
             if let Ok(dir) = app.path().app_local_data_dir() {
                 stats::set_file(dir.join("cleaning-stats.json"));
+                health::STATE.set_history_file(dir.join("battery-history.json"));
             }
             let handle = app.handle().clone();
             watch::start(move |root| {
@@ -219,6 +227,7 @@ pub fn run() {
             cleanup_preview,
             cleanup_execute,
             cleaning_stats,
+            get_health,
             check_path,
             find_leftovers,
             open_system_cleanup,
